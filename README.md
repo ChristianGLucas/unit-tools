@@ -117,10 +117,14 @@ and fails *silently*: converting 2 `m**1e9` to `km**1e9` needs a factor of
 grouped exponents are refused outright: exponentiation is right-associative, so
 each step *squares* the exponent, and 19 characters reached ~8s and ~900MB
 before this bound existed. The rule is structural rather than a pattern match —
-an exponent must be a bare number applied to a bare unit — because a syntactic
-check is walked straight through by parentheses (`m**(9**(9**(9)))` has no
-chained-operator adjacency and every literal is under 50, yet never finishes).
-The cost is that `(m/s)**2` must be written `m**2/s**2`.
+an exponent must be a bare number applied to a bare unit — and it is enforced
+on the form Pint will actually parse, after its word-exponent syntax is
+desugared. A raw-string check is walked straight through two ways: by
+parentheses (`m**(9**(9**(9)))`), and by Pint's own words — `sq square cubic
+meter cubed squared` becomes `meter**2**2**3**3**2` with no operator in sight
+(16.9s, 1.7GB before this was closed). A single word exponent like `m squared`
+is fine; only stacking them is refused. The cost is that `(m/s)**2` must be
+written `m**2/s**2`.
 
 The exponent cap alone is not sufficient — `angstrom**35` still reduces by
 1e-350 — so the underflow checks below are what actually guarantee it.
@@ -160,7 +164,7 @@ Note that two valid but incompatible units are **not** an error from
 axiom test
 ```
 
-156 tests, including an independent-oracle suite that checks conversions
+161 tests, including an independent-oracle suite that checks conversions
 against values derived from scratch from the defining relations (1 inch =
 0.0254 m, 1 hp = 550 ft·lbf/s, F = C·9/5 + 32) rather than round-tripping
 through Pint, and a hostile-input suite covering injection strings, resource

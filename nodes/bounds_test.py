@@ -377,3 +377,38 @@ def test_an_upstream_error_is_annotated_once_not_once_per_hop():
     assert third.error.message.count(_units.UPSTREAM_MARKER) == 1
     # The root cause survives every hop.
     assert "'kmm' is not defined" in third.error.message
+
+
+# Pint desugars WORD exponents ("square", "cubic", "sq", "squared", "cubed")
+# into "**N" before parsing, so a stack of them is a tower with no "**", "^" or
+# parenthesis in the raw string — invisible to a raw-string guard.
+# "sq square cubic meter cubed squared" became "meter**2**2**3**3**2" and cost
+# 16.9s / 1.7GB before the guard was moved onto the preprocessed string.
+WORD_EXPONENT_TOWERS = [
+    "sq square cubic meter cubed squared",
+    "square cubic meter",
+    "square " * 9 + "meter",
+    "meter squared squared squared squared",
+]
+
+
+@pytest.mark.parametrize("units", WORD_EXPONENT_TOWERS)
+def test_word_exponent_towers_are_refused(units):
+    start = time.monotonic()
+    for call in _every_node_call(units):
+        result = call()
+        assert result.error.code == "INVALID_UNIT", (
+            f"word tower {units!r} was ACCEPTED "
+            f"(got {result.error.code or '<none>'})"
+        )
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"rejecting {units!r} took {elapsed:.2f}s"
+
+
+def test_a_single_word_exponent_is_still_accepted():
+    # The guard rejects STACKED word exponents, not a lone one: "m squared" is
+    # an ordinary way to write m**2 and must keep working.
+    for expr, expected in (("m squared", "meter ** 2"), ("cubic m", "meter ** 3")):
+        result = describe_unit(ax(), UnitInput(units=expr))
+        assert not result.error.code, f"{expr!r}: {result.error.message}"
+        assert result.canonical == expected

@@ -26,6 +26,7 @@ import re
 import unicodedata
 
 import pint
+from pint.util import string_preprocessor
 
 # One registry for the whole process. A registry is read-only once built —
 # nodes only look units up, never define them — so sharing it keeps nodes
@@ -151,14 +152,23 @@ def _check_expression(expr: str, code: str, label: str) -> str:
             f"{label} contains the character {bad!r}, which is not valid in a "
             f"unit expression",
         )
-    # Both of the following fire BEFORE the parser sees the string, because the
-    # cost and the overflow both happen inside parsing.
+    # The exponent guards below must run on the PREPROCESSED string, not the
+    # raw one. Pint desugars word exponents ("square", "cubic", "sq", "cubed",
+    # "squared") into "**N" BEFORE it parses — "sq square cubic meter cubed
+    # squared" becomes "meter**2**2**3**3**2", a tower with no "**", "^" or
+    # parenthesis anywhere in the raw string. Checking the raw string misses it
+    # entirely (measured: 16.9s, 1.7GB). Running Pint's own preprocessor first
+    # means we guard exactly the string the parser will see, whatever surface
+    # syntax produced it. The preprocessor is a handful of regex subs (~10µs)
+    # and is idempotent on already-symbolic input, so this is cheap and safe.
+    checked = string_preprocessor(expr)
     for pattern, shape in (
         (_EXPONENT_OPENS_GROUP, "an exponent that opens a group ('m**(2)')"),
         (_GROUP_IS_EXPONENTIATED, "a group raised to a power ('(m/s)**2')"),
-        (_CHAINED_EXPONENT, "one exponent applied to another ('m**2**2')"),
+        (_CHAINED_EXPONENT, "one exponent applied to another, including the "
+         "word forms 'square'/'cubic'/'squared'/'cubed' stacked together"),
     ):
-        if pattern.search(expr):
+        if pattern.search(checked):
             raise UnitError(
                 code,
                 f"{label} contains {shape}. An exponent must be a bare number "
@@ -167,7 +177,7 @@ def _check_expression(expr: str, code: str, label: str) -> str:
                 f"unboundedly expensive to evaluate. Write 'm**2/s**2' rather "
                 f"than '(m/s)**2'",
             )
-    for literal in _NUMERIC_LITERAL.findall(expr):
+    for literal in _NUMERIC_LITERAL.findall(checked):
         try:
             value = float(literal)
         except (ValueError, OverflowError):
