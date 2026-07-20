@@ -9,7 +9,7 @@
 //   "m/s"                metre per second
 //   "kg*m/s**2"          newton, spelled out
 //   "degC"               degree Celsius (an OFFSET unit, see below)
-//   ""                   dimensionless
+//   "dimensionless"      the dimensionless unit ("" is REJECTED, see Quantity.units)
 //
 // OFFSET UNITS. degC and degF measure from a non-zero zero point. Converting
 // them is well defined (0 degC is 32 degF); adding or scaling them is not,

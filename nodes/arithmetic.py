@@ -15,6 +15,22 @@ from nodes._units import (
 _OPS = ("add", "sub", "mul", "div")
 
 
+def _underflow_source_for(op, left, right):
+    """A non-zero `source` for check_result iff the result should be non-zero.
+
+    Returns None (guard off) for offset operands, and for the cases where a
+    zero result is mathematically legitimate rather than an underflow: an
+    operand of zero magnitude. When it returns 1.0, a zero result magnitude can
+    only be an underflow and is reported as OVERFLOW.
+    """
+    if is_offset_unit(left.units) or is_offset_unit(right.units):
+        return None
+    if op == "mul":
+        return 1.0 if (left.magnitude != 0 and right.magnitude != 0) else None
+    # div: the right magnitude is already known non-zero at this point.
+    return 1.0 if left.magnitude != 0 else None
+
+
 def arithmetic(ax: AxiomContext, input: ArithmeticRequest) -> Quantity:
     """Add, subtract, multiply or divide two quantities with their units
     carried through — 3 m / 1.5 s becomes 2 m/s — refusing dimensional
@@ -75,13 +91,40 @@ def arithmetic(ax: AxiomContext, input: ArithmeticRequest) -> Quantity:
                 lambda: (left / right).to_reduced_units(), "the division"
             )
 
+        # A multiplicative result can underflow to exactly 0.0 just like a
+        # conversion can — 1e-200 m * 1e-200 m is 1e-400 m**2 — and emitting
+        # that zero with a valid unit and no error is the same silent-wrong-
+        # answer the other multiplicative nodes guard against. The result is
+        # mathematically zero only when an operand's magnitude is; when both
+        # are non-zero (mul) or the left is non-zero (div, right already
+        # non-zero) a zero magnitude means it underflowed. Offset operands are
+        # skipped, as everywhere else, since there zero is a real value.
+        source = _underflow_source_for(op, left, right)
         return Quantity(
-            magnitude=check_result(result.magnitude),
+            magnitude=check_result(result.magnitude, source=source),
             units=unit_name(result.units),
         )
     except UnitError as exc:
         ax.log.info("arithmetic rejected input", code=exc.code)
         return Quantity(error={"code": exc.code, "message": exc.message})
+    except pint.OffsetUnitCalculusError as exc:
+        # Multiplying or dividing an offset unit — "degC * m" — is ambiguous
+        # for the same reason adding one is: is the degC a temperature or a
+        # temperature difference? Pint refuses it, and so do we. This MUST come
+        # before the catch-all below; otherwise it is dead code and the case
+        # is mislabelled INTERNAL (the caller's input is perfectly valid).
+        ax.log.info("arithmetic rejected offset operand")
+        return Quantity(
+            error={
+                "code": "OFFSET_UNIT",
+                "message": (
+                    f"ambiguous {input.op} involving an offset unit "
+                    f"(degC/degF); convert to an absolute scale such as "
+                    f"'kelvin', or use the explicit difference unit "
+                    f"'delta_degC', first: {exc}"
+                ),
+            }
+        )
     except Exception as exc:
         # Last resort. A node must never surface a traceback: it would leak
         # internal paths to the caller and break the contract that every
@@ -97,5 +140,3 @@ def arithmetic(ax: AxiomContext, input: ArithmeticRequest) -> Quantity:
                 ),
             }
         )
-    except pint.OffsetUnitCalculusError as exc:
-        return Quantity(error={"code": "OFFSET_UNIT", "message": str(exc)})

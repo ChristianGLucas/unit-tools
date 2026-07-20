@@ -85,6 +85,27 @@ def test_refuses_ambiguous_arithmetic_on_offset_units():
     assert_error(_op(q(20.0, "degC"), "sub", q(5.0, "degC")), "OFFSET_UNIT")
 
 
+def test_refuses_ambiguous_multiplication_and_division_of_offset_units():
+    # "degC * m" is ambiguous the same way "degC + degC" is: is the degC a
+    # temperature or a temperature difference? Pint raises for it, and it must
+    # come back as OFFSET_UNIT — NOT INTERNAL, which would falsely tell the
+    # caller the package faulted on their perfectly legitimate (if ambiguous)
+    # input. This is the package's advertised offset-scale handling.
+    for op in ("mul", "div"):
+        for left_u, right_u in (("degC", "m"), ("m", "degC"), ("degF", "degF")):
+            result = _op(q(2.0, left_u), op, q(3.0, right_u))
+            assert_error(result, "OFFSET_UNIT")
+
+
+def test_the_explicit_difference_unit_multiplies_without_ambiguity():
+    # delta_degC is a temperature DIFFERENCE, which is multiplicative and
+    # unambiguous, so it is allowed where degC is refused.
+    result = _op(q(2.0, "delta_degC"), "mul", q(3.0, "meter"))
+    assert_ok(result)
+    assert result.magnitude == pytest.approx(6.0)
+    assert result.units == "delta_degree_Celsius * meter"
+
+
 def test_absolute_temperatures_add_normally():
     result = _op(q(1.0, "kelvin"), "add", q(1.0, "kelvin"))
     assert_ok(result)
@@ -114,6 +135,33 @@ def test_rejects_a_non_finite_operand():
 def test_reports_overflow_instead_of_emitting_infinity():
     result = _op(q(1e308, "meter"), "mul", q(1e308, "meter"))
     assert_error(result, "OVERFLOW")
+
+
+def test_a_multiplicative_result_that_underflows_to_zero_is_an_overflow():
+    # 1e-200 m * 1e-200 m is 1e-400 m**2, which underflows to exactly 0.0.
+    # Emitting magnitude 0 with a valid "meter ** 2" unit and no error is the
+    # same silent-wrong-answer the conversion nodes guard against, so mul and
+    # div must guard it too — this is the one multiplicative node where the
+    # result unit is non-empty, so the empty-units defence cannot catch it.
+    assert_error(_op(q(1e-200, "meter"), "mul", q(1e-200, "meter")), "OVERFLOW")
+    assert_error(_op(q(1e-200, "meter"), "div", q(1e200, "second")), "OVERFLOW")
+
+
+def test_a_legitimately_zero_operand_still_multiplies_to_zero():
+    # The guard must not fire when a result of zero is mathematically correct:
+    # anything times zero is zero, and zero divided by anything is zero.
+    result = _op(q(0.0, "meter"), "mul", q(5.0, "second"))
+    assert_ok(result)
+    assert result.magnitude == 0.0
+
+    result = _op(q(0.0, "meter"), "div", q(5.0, "second"))
+    assert_ok(result)
+    assert result.magnitude == 0.0
+
+    # A genuinely small but representable product is untouched.
+    result = _op(q(5e-10, "meter"), "mul", q(5e-10, "meter"))
+    assert_ok(result)
+    assert result.magnitude == pytest.approx(2.5e-19)
 
 
 def test_is_deterministic():
