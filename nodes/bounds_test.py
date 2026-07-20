@@ -14,6 +14,7 @@ import time
 import pytest
 
 from gen.messages_pb2 import (
+    Quantity,
     ArithmeticRequest,
     CompareRequest,
     CompatibilityRequest,
@@ -104,6 +105,40 @@ def test_an_expression_at_exactly_the_length_bound_is_still_accepted():
 
 
 EXTREME_EXPONENT_UNITS = ["m**1e9", "km**1e9", "m**-1e9", "s**200", "meter ** 1e+09"]
+
+
+def test_an_errored_quantity_input_propagates_instead_of_reading_as_zero():
+    # Quantity is both an input and an output type, so in a flow a failed
+    # upstream node hands the next node a Quantity with error set, magnitude 0
+    # and units "". Read naively that is a valid "0 dimensionless", and the
+    # downstream node returns a confident wrong answer with no error at all.
+    broken = Quantity(
+        magnitude=0.0,
+        units="",
+        error={"code": "INVALID_UNIT", "message": "'flurbles' is not defined"},
+    )
+    consumers = (
+        lambda: convert(ax(), ConvertRequest(quantity=broken, to_units="meter")),
+        lambda: to_base_units(ax(), broken),
+        lambda: format_node(ax(), FormatRequest(quantity=broken)),
+        lambda: arithmetic(
+            ax(), ArithmeticRequest(left=broken, op="add", right=q(1.0, "m"))
+        ),
+        lambda: arithmetic(
+            ax(), ArithmeticRequest(left=q(1.0, "m"), op="add", right=broken)
+        ),
+        lambda: compare(ax(), CompareRequest(left=broken, right=q(1.0, "m"))),
+        lambda: compare(ax(), CompareRequest(left=q(1.0, "m"), right=broken)),
+    )
+    for call in consumers:
+        result = call()
+        assert result.error.code == "INVALID_UNIT", (
+            f"an errored input Quantity was treated as valid: got "
+            f"{result.error.code or '<no error, ACCEPTED>'}"
+        )
+        # The upstream cause must survive, not be replaced by a generic message.
+        assert "flurbles" in result.error.message
+        assert "upstream" in result.error.message
 
 
 @pytest.mark.parametrize("units", EXTREME_EXPONENT_UNITS)

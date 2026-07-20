@@ -28,6 +28,12 @@ Every node consumes and emits the same `Quantity`: a finite `magnitude` and a
 Because the envelope is shared, nodes chain directly — `Parse` → `Convert` →
 `Format` needs no adapters.
 
+`Quantity` also carries an `error` field, which means it travels *into* a node
+when a flow chains one onto another. A node handed a Quantity whose `error` is
+already set refuses it and propagates that error unchanged, rather than reading
+the accompanying zero magnitude as a valid "0 dimensionless" — which would
+silently turn an upstream failure into the number zero.
+
 ## Nodes
 
 | Node | Does |

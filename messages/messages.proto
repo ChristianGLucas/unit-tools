@@ -78,6 +78,13 @@ message Quantity {
   // "metre", "metres" and "m" all come back as "meter".
   string units = 2;
   // Set when the operation failed; unset on success.
+  //
+  // Because Quantity is both an input and an output type, this field also
+  // travels INTO a node when a flow chains one node onto another. A node
+  // given a Quantity whose `error` is already set refuses it and propagates
+  // that error unchanged, rather than reading the accompanying zero magnitude
+  // as a valid "0 dimensionless" — which would silently turn an upstream
+  // failure into the number zero.
   Error error = 3;
 }
 

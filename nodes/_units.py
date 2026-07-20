@@ -220,7 +220,22 @@ def guard_numeric(fn, what: str = "the computation"):
 
 
 def quantity_from(msg, label: str = "quantity"):
-    """Build a Pint Quantity from a `Quantity` message, validating both halves."""
+    """Build a Pint Quantity from a `Quantity` message, validating both halves.
+
+    A Quantity that ALREADY CARRIES AN ERROR is refused, and the upstream error
+    is propagated unchanged. This matters because `Quantity` is both an input
+    and an output type: in a flow, a failed upstream node emits a Quantity with
+    `error` set and magnitude 0, units "". Without this check a downstream node
+    reads that as a perfectly valid "0 dimensionless" and returns a confident,
+    entirely wrong answer with no error at all — the original failure silently
+    becomes the number zero.
+    """
+    if msg.error.code:
+        raise UnitError(
+            msg.error.code,
+            f"{label} carries an error from an upstream node and cannot be "
+            f"used as input: {msg.error.message}",
+        )
     magnitude = check_magnitude(msg.magnitude, f"{label}.magnitude")
     unit = parse_unit(msg.units, f"{label}.units")
     return _UREG.Quantity(magnitude, unit)
