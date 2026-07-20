@@ -42,7 +42,32 @@ def test_division_of_compatible_units_is_dimensionless():
     result = _op(q(1.0, "kilometer"), "div", q(500.0, "meter"))
     assert_ok(result)
     assert result.magnitude == pytest.approx(2.0)
-    assert result.units == ""
+    assert result.units == "dimensionless"
+
+
+def test_multiplication_reduces_units_of_the_same_dimension():
+    # 3 m * 4 m = 12 m**2 is a no-op for reduction, so it cannot show that
+    # reduction happens. These can: without .to_reduced_units() the first
+    # returns 500.0 "kilometer * meter" and the second 6.0 "hour * second".
+    result = _op(q(1.0, "kilometer"), "mul", q(500.0, "meter"))
+    assert_ok(result)
+    assert result.magnitude == pytest.approx(500000.0)
+    assert result.units == "meter ** 2"
+
+    result = _op(q(2.0, "hour"), "mul", q(3.0, "second"))
+    assert_ok(result)
+    assert result.magnitude == pytest.approx(21600.0)
+    assert result.units == "second ** 2"
+
+
+def test_rankine_is_absolute_and_so_its_arithmetic_is_permitted():
+    # degR is an imperial temperature, but its zero IS absolute zero, so it is
+    # purely multiplicative and adding it is unambiguous. Grouping it with
+    # degC/degF would be wrong.
+    result = _op(q(1.0, "degR"), "add", q(1.0, "degR"))
+    assert_ok(result)
+    assert result.magnitude == pytest.approx(2.0)
+    assert result.units == "degree_Rankine"
 
 
 def test_refuses_to_add_incompatible_dimensions():
@@ -73,6 +98,10 @@ def test_rejects_an_unknown_operator():
 
 
 def test_division_by_zero_is_an_overflow_not_an_infinity():
+    # Asserts the CONTRACT, not the explicit guard branch: removing the
+    # `right.magnitude == 0` check leaves this passing, because check_result
+    # catches the resulting infinity by another route. Both paths are
+    # deliberate, and this pins the caller-visible outcome of either.
     result = _op(q(1.0, "meter"), "div", q(0.0, "second"))
     assert_error(result, "OVERFLOW")
 

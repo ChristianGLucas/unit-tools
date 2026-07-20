@@ -1,7 +1,7 @@
 import pytest
 
 from gen.messages_pb2 import ParseRequest
-from nodes._units import MAX_TEXT_LEN, MAX_UNIT_LEN
+from nodes import _units
 from nodes.parse import parse
 from nodes.testkit import assert_error, assert_ok, ax
 
@@ -18,7 +18,7 @@ def _parse(text: str):
         ("-3.2e4 J", -32000.0, "joule"),
         ("+7 kg", 7.0, "kilogram"),
         (".5 mile", 0.5, "mile"),
-        ("42", 42.0, ""),                      # bare number is dimensionless
+        ("42", 42.0, "dimensionless"),         # bare number is dimensionless
         ("1kg", 1.0, "kilogram"),              # no space required
         ("  2.5   degC  ", 2.5, "degree_Celsius"),
         ("100 metres", 100.0, "meter"),        # alias canonicalised
@@ -55,11 +55,39 @@ def test_rejects_a_magnitude_that_is_not_finite():
     assert_error(_parse("nan meter"), "INVALID_QUANTITY")
 
 
-def test_rejects_text_beyond_the_documented_length_bound():
-    assert_ok(_parse("1 " + "meter"))
-    assert_error(_parse("1 " + "m" * (MAX_TEXT_LEN + 1)), "INVALID_QUANTITY")
-    # A unit expression inside otherwise-short text is bounded separately.
-    assert_error(_parse("1 " + "m" * (MAX_UNIT_LEN + 1)), "INVALID_UNIT")
+def test_the_documented_length_bounds_are_the_actual_bounds():
+    # LITERAL numbers on purpose. Importing the constant and asserting
+    # "MAX + 1 is rejected" holds for any value of MAX, so it would pass even
+    # if the bound were loosened to 100000 — it tests that a comparison exists,
+    # not that the documented bound is enforced.
+    at_limit = "1" + " " * 511                       # exactly 512 characters
+    assert len(at_limit) == 512
+    assert_ok(_parse(at_limit))
+
+    over_limit = "1" + " " * 512                     # exactly 513 characters
+    assert len(over_limit) == 513
+    assert_error(_parse(over_limit), "INVALID_QUANTITY")
+
+    # A unit expression inside otherwise-short text is bounded separately, at
+    # 256 — see describe_unit_test, which measures that bound directly.
+    assert_error(_parse("1 " + "m" * 257), "INVALID_UNIT")
+
+
+def test_the_documented_constants_have_not_drifted():
+    # Pins the numbers the proto and README state, so code and docs cannot
+    # diverge silently.
+    assert _units.MAX_TEXT_LEN == 512
+    assert _units.MAX_UNIT_LEN == 256
+    assert _units.MAX_UNIT_EXPONENT == 50
+    assert _units.MAX_PRECISION == 15
+    assert _units.RELATIVE_TOLERANCE == 1e-12
+
+
+def test_rejects_non_ascii_digits_in_the_magnitude():
+    # The unit half is held to a strict ASCII charset; the magnitude must be
+    # too, or the contract is strict in one half and lax in the other.
+    assert_error(_parse("٥ m"), "INVALID_QUANTITY")      # Arabic-Indic five
+    assert_error(_parse("५ m"), "INVALID_QUANTITY")      # Devanagari five
 
 
 def test_is_deterministic():

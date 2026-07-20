@@ -45,8 +45,10 @@ MAX_TEXT_LEN = 512
 # direction raises OverflowError from inside the maths library.
 #
 # 50 is far above any real unit expression (a volume is 3, an exotic tensor
-# term might reach 12) and keeps every factor comfortably inside float64:
-# 1e-3**50 is 1e-150, with ~150 decades of headroom.
+# term might reach 12). It does NOT by itself keep every factor inside float64
+# — "angstrom**35" still reduces by 1e-350 — so the bound is a cheap first
+# filter, and the underflow checks in `check_result` and `base_factor` are what
+# actually guarantee a zero is never returned as an answer.
 MAX_UNIT_EXPONENT = 50
 
 # Relative tolerance for declaring two magnitudes equal after a conversion.
@@ -73,11 +75,47 @@ MAX_PRECISION = 15
 # real-world input uses each interchangeably.
 _ALLOWED_UNIT_CHARS = re.compile(r"^[0-9A-Za-z_\s.+\-*/^()%µμΩΩ°]*$")
 
+# EXPONENT TOWERS are the one cost bomb a length bound cannot catch, because
+# the damage is in the VALUE, not the length. Exponentiation is
+# right-associative, so every step SQUARES the exponent: "m**2**2**2**2**2**2"
+# is 19 characters and reaches 2**64. Measured on this package before the
+# bound: ~8s and ~900MB, and an exponent so large that merely FORMATTING it for
+# the error message raised OverflowError.
+#
+# A first attempt matched the tower SYNTACTICALLY — "**<number>**" adjacency
+# plus a cap on each literal — and parentheses walked straight through it:
+# "m**(9**(9**(9)))" has no such adjacency and every literal is <= 50, yet it
+# never finishes. "(((m**2)**2)**2)**2" evades it from the other side.
+#
+# So the rule is STRUCTURAL instead: an exponent must be a bare numeric
+# literal applied to a bare unit name. Three shapes are refused outright —
+# an exponent that opens a group, a group that is itself exponentiated, and
+# one exponent applied to another. Together they make it impossible to write
+# an exponent that is not a single literal, and the literal bound then holds.
+#
+# The cost of this strictness is that "(m/s)**2" must be written "m**2/s**2".
+# That is a real but small loss, and it is stated in the error message.
+_EXPONENT_OPENS_GROUP = re.compile(r"(?:\*\*|\^)\s*\(")
+_GROUP_IS_EXPONENTIATED = re.compile(r"\)\s*(?:\*\*|\^)")
+_CHAINED_EXPONENT = re.compile(
+    r"(?:\*\*|\^)[^*/^()]*(?:\*\*|\^)"
+)
+
+# Every numeric literal in a unit expression is an exponent — Pint refuses a
+# scaling factor outright ("2*m" is a quantity, not a unit) — so bounding the
+# literals on the RAW string stops the parser ever computing a huge power.
+_NUMERIC_LITERAL = re.compile(r"\d+\.?\d*(?:[eE][-+]?\d+)?|\.\d+(?:[eE][-+]?\d+)?")
+
 # One number: optional sign, digits with an optional decimal point (or a bare
 # leading point), and an optional exponent. Anchored at the start so `Parse`
 # reads the magnitude itself instead of letting Pint's permissive parser do it.
+#
+# [0-9] rather than \d, deliberately: \d is Unicode-aware and would accept
+# Arabic-Indic "٥" or Devanagari "५" as a magnitude while the unit half of the
+# same string is held to a strict ASCII charset. One half-strict contract is
+# worse than either consistent choice.
 _LEADING_NUMBER = re.compile(
-    r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(.*)$", re.DOTALL
+    r"^\s*([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)\s*(.*)$", re.DOTALL
 )
 
 
@@ -113,31 +151,100 @@ def _check_expression(expr: str, code: str, label: str) -> str:
             f"{label} contains the character {bad!r}, which is not valid in a "
             f"unit expression",
         )
+    # Both of the following fire BEFORE the parser sees the string, because the
+    # cost and the overflow both happen inside parsing.
+    for pattern, shape in (
+        (_EXPONENT_OPENS_GROUP, "an exponent that opens a group ('m**(2)')"),
+        (_GROUP_IS_EXPONENTIATED, "a group raised to a power ('(m/s)**2')"),
+        (_CHAINED_EXPONENT, "one exponent applied to another ('m**2**2')"),
+    ):
+        if pattern.search(expr):
+            raise UnitError(
+                code,
+                f"{label} contains {shape}. An exponent must be a bare number "
+                f"applied to a bare unit, because chained or grouped exponents "
+                f"square the exponent at every step and make the expression "
+                f"unboundedly expensive to evaluate. Write 'm**2/s**2' rather "
+                f"than '(m/s)**2'",
+            )
+    for literal in _NUMERIC_LITERAL.findall(expr):
+        try:
+            value = float(literal)
+        except (ValueError, OverflowError):
+            raise UnitError(code, f"{label} contains an unreadable number {literal!r}")
+        if not math.isfinite(value) or abs(value) > MAX_UNIT_EXPONENT:
+            raise UnitError(
+                code,
+                f"{label} uses the exponent {literal}; the maximum absolute "
+                f"exponent is {MAX_UNIT_EXPONENT}, because beyond it a "
+                f"conversion factor is no longer representable and the result "
+                f"would silently lose all its precision",
+            )
     return expr
+
+
+# Pint memoises parsed expressions in a plain dict keyed by the caller's
+# string, and the registry is a process-wide singleton, so distinct
+# expressions accumulate for the life of the worker with nothing evicting
+# them. Measured: 20,000 distinct valid expressions grew the cache from 0 to
+# 20,000 entries and RSS from ~44MB to ~53MB, linear and unbounded.
+#
+# Correctness never depended on the cache, so dropping it wholesale when it
+# grows past this bound is both safe and cheap — the next lookups simply
+# re-parse. This keeps a long-lived worker's memory flat under adversarial
+# input without touching the hot path for ordinary traffic.
+MAX_PARSE_CACHE_ENTRIES = 4096
+
+
+def _bound_parse_cache() -> None:
+    """Keep the shared registry's expression cache from growing without limit."""
+    try:
+        cache = _UREG._cache.parse_unit
+    except AttributeError:  # pragma: no cover - Pint internals moved
+        return
+    if len(cache) > MAX_PARSE_CACHE_ENTRIES:
+        cache.clear()
 
 
 def parse_unit(units: str, label: str = "units"):
     """Resolve a unit expression to a Pint Unit, or raise UnitError.
 
-    An empty expression is dimensionless. A expression carrying a scaling
-    factor (``"2*m"``, ``"5"``) is refused by Pint itself — a unit is not a
-    quantity — and that refusal is surfaced as INVALID_UNIT.
+    An EMPTY expression is refused. Dimensionless must be written explicitly as
+    "dimensionless", and that is a load-bearing decision rather than pedantry:
+
+    proto3 has no field presence for scalars, so an unset — or edge-dropped —
+    `Quantity` arrives as ``{magnitude: 0, units: ""}``. If "" meant
+    dimensionless, that value would be a perfectly valid measurement of zero,
+    and any upstream failure would silently become the number 0. A flow edge
+    adapter that maps only `magnitude` and `units` (the natural way to write
+    one) drops the `error` field entirely, so checking `error` alone cannot
+    catch it. Making "" invalid is what closes that hole: the default value is
+    no longer a plausible answer.
+
+    An expression carrying a scaling factor (``"2*m"``, ``"5"``) is refused by
+    Pint itself — a unit is not a quantity — surfaced as INVALID_UNIT.
     """
     units = _check_expression(units, "INVALID_UNIT", label)
     stripped = units.strip()
     if not stripped:
-        return _UREG.dimensionless
+        raise UnitError(
+            "INVALID_UNIT",
+            f"{label} is empty; write 'dimensionless' explicitly for a "
+            f"dimensionless quantity. An empty value is also what an unset or "
+            f"dropped field looks like, so it is not treated as a valid unit",
+        )
     try:
         unit = _UREG.Unit(stripped)
     except UnitError:
         raise
     except Exception as exc:  # pint raises a wide family of parse errors
         raise UnitError("INVALID_UNIT", f"{label} {units!r} is not a valid unit: {exc}")
+    _bound_parse_cache()
     for name, exponent in unit._units.items():
         if abs(exponent) > MAX_UNIT_EXPONENT:
             raise UnitError(
                 "INVALID_UNIT",
-                f"{label} raises {name!r} to the power {exponent:g}; the maximum "
+                f"{label} raises {name!r} to the power {str(exponent)[:40]}; the maximum "
                 f"absolute exponent is {MAX_UNIT_EXPONENT}, because beyond it a "
                 f"conversion factor is no longer representable and the result "
                 f"would silently lose all precision",
@@ -247,9 +354,13 @@ def quantity_of(magnitude: float, unit):
 
 
 def unit_name(unit) -> str:
-    """Pint's canonical spelling of a unit; empty string for dimensionless."""
-    text = str(unit)
-    return "" if text == "dimensionless" else text
+    """Pint's canonical spelling of a unit, for a Quantity's `units` field.
+
+    Dimensionless is spelled "dimensionless", never "" — an emitted Quantity
+    must be valid input to the next node, and `parse_unit` refuses "" so that a
+    dropped or defaulted field cannot masquerade as a measurement of zero.
+    """
+    return str(unit)
 
 
 def dimensionality_name(unit) -> str:
@@ -259,7 +370,11 @@ def dimensionality_name(unit) -> str:
 
 
 def base_unit_name(unit) -> str:
-    """The SI base units a unit reduces to; empty string for dimensionless."""
+    """The SI base units a unit reduces to; "dimensionless" if it has none.
+
+    Spelled the same way a Quantity's `units` field is, so it can be fed
+    straight back into another node.
+    """
     return unit_name(
         guard_numeric(
             lambda: _UREG.Quantity(1.0, unit).to_base_units().units,
@@ -282,11 +397,16 @@ def is_offset_unit(unit) -> bool:
         one = _UREG.Quantity(1.0, unit).to_base_units().magnitude
         two = _UREG.Quantity(2.0, unit).to_base_units().magnitude
     except Exception:
-        # A unit whose base conversion is undefined is not something we can
-        # scale either; treat it as offset (the conservative answer).
-        return True
+        # A unit whose base conversion blows up numerically is not thereby an
+        # OFFSET unit — it is an extreme MULTIPLICATIVE one. Answering True
+        # here used to be "conservative", but it silently disabled the
+        # underflow guard (which is skipped for offset units, where zero is a
+        # real value), so converting 1 "m**50" to "light_year**50" returned
+        # magnitude 0 with no error at all. False is the correct answer: the
+        # unit is multiplicative, and the underflow guard must stay armed.
+        return False
     if not (math.isfinite(one) and math.isfinite(two)):
-        return True
+        return False
     return not math.isclose(two, 2.0 * one, rel_tol=1e-12, abs_tol=0.0)
 
 
@@ -302,7 +422,10 @@ def base_factor(unit):
         factor = float(_UREG.Quantity(1.0, unit).to_base_units().magnitude)
     except Exception:
         return 0.0, False
-    if not math.isfinite(factor):
+    # Zero is not a factor. "angstrom**35" reduces by 1e-350, which underflows
+    # to exactly 0.0 — reporting that as base_factor=0 with
+    # base_factor_defined=True would assert a wrong number is trustworthy.
+    if not math.isfinite(factor) or factor == 0.0:
         return 0.0, False
     return factor, True
 

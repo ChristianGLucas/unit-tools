@@ -25,11 +25,22 @@ def test_reduces_an_offset_temperature_to_absolute_kelvin():
     assert result.units == "kelvin"
 
 
-def test_a_dimensionless_quantity_reduces_to_an_empty_unit():
+def test_a_dimensionless_quantity_reduces_to_an_explicit_dimensionless_unit():
     result = to_base_units(ax(), q(5.0, "percent"))
     assert_ok(result)
     assert result.magnitude == pytest.approx(0.05)
-    assert result.units == ""
+    # Spelled out, so the result is valid input to the next node.
+    assert result.units == "dimensionless"
+
+
+def test_a_reduction_that_underflows_to_zero_is_an_error_not_a_zero():
+    # The "no silent zeros" guarantee is package-wide, not Convert-only.
+    result = to_base_units(ax(), q(1e-320, "angstrom"))
+    assert_error(result, "OVERFLOW")
+
+
+def test_rejects_an_empty_unit_rather_than_assuming_dimensionless():
+    assert_error(to_base_units(ax(), q(1.0, "")), "INVALID_UNIT")
 
 
 def test_rejects_an_unknown_unit():

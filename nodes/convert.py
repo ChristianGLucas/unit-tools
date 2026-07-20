@@ -30,3 +30,18 @@ def convert(ax: AxiomContext, input: ConvertRequest) -> Quantity:
     except UnitError as exc:
         ax.log.info("convert rejected input", code=exc.code)
         return Quantity(error={"code": exc.code, "message": exc.message})
+    except Exception as exc:
+        # Last resort. A node must never surface a traceback: it would leak
+        # internal paths to the caller and break the contract that every
+        # failure arrives as a structured Error. INTERNAL says the fault is
+        # ours, so the caller does not go debugging their own input.
+        ax.log.error("convert faulted", error=str(exc))
+        return Quantity(
+            error={
+                "code": "INTERNAL",
+                "message": (
+                    f"the node faulted while handling this input "
+                    f"({type(exc).__name__}); the input may be valid"
+                ),
+            }
+        )

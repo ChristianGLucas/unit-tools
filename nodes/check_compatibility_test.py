@@ -46,11 +46,26 @@ def test_offset_units_are_compatible_but_have_no_single_factor():
 
 
 def test_dimensionless_units_are_compatible_with_each_other():
-    result = _check("percent", "")
+    result = _check("percent", "dimensionless")
     assert_ok(result)
     assert result.compatible
     assert result.dimensionality_a == ""
     assert result.factor == pytest.approx(0.01)
+
+
+def test_rejects_an_empty_unit_rather_than_assuming_dimensionless():
+    assert_error(_check("percent", ""), "INVALID_UNIT")
+    assert_error(_check("", "percent"), "INVALID_UNIT")
+
+
+def test_an_underflowing_factor_is_reported_as_undefined():
+    # angstrom**35 to m**35 is 1e-350, which underflows to exactly 0.0.
+    # Zero is not a conversion factor.
+    result = _check("angstrom**35", "m**35")
+    assert_ok(result)
+    assert result.compatible
+    assert not result.factor_defined
+    assert result.factor == 0.0
 
 
 def test_rejects_an_unknown_unit():

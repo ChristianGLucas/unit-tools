@@ -52,10 +52,16 @@ def compare(ax: AxiomContext, input: CompareRequest) -> Comparison:
         else:
             relation = "gt"
 
-        if right_magnitude == 0:
-            ratio, ratio_defined = 0.0, False
-        else:
-            ratio, ratio_defined = check_result(left_magnitude / right_magnitude), True
+        # The RELATION is well defined for any two finite magnitudes, but their
+        # ratio need not be representable: 1e200 m vs 1e-200 m orders perfectly
+        # well, while the ratio is 1e400. Failing the whole comparison over an
+        # unrepresentable ratio would refuse an ordinary question, so an
+        # overflowing ratio is reported as undefined and the relation stands.
+        ratio, ratio_defined = 0.0, False
+        if right_magnitude != 0:
+            candidate = left_magnitude / right_magnitude
+            if math.isfinite(candidate) and candidate != 0.0:
+                ratio, ratio_defined = candidate, True
 
         return Comparison(
             relation=relation,
@@ -66,3 +72,18 @@ def compare(ax: AxiomContext, input: CompareRequest) -> Comparison:
     except UnitError as exc:
         ax.log.info("compare rejected input", code=exc.code)
         return Comparison(error={"code": exc.code, "message": exc.message})
+    except Exception as exc:
+        # Last resort. A node must never surface a traceback: it would leak
+        # internal paths to the caller and break the contract that every
+        # failure arrives as a structured Error. INTERNAL says the fault is
+        # ours, so the caller does not go debugging their own input.
+        ax.log.error("compare faulted", error=str(exc))
+        return Comparison(
+            error={
+                "code": "INTERNAL",
+                "message": (
+                    f"the node faulted while handling this input "
+                    f"({type(exc).__name__}); the input may be valid"
+                ),
+            }
+        )

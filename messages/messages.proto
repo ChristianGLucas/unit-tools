@@ -11,11 +11,21 @@
 //   "degC"               degree Celsius (an OFFSET unit, see below)
 //   ""                   dimensionless
 //
-// OFFSET UNITS. degC, degF and degR measure from a non-zero zero point.
-// Converting them is well defined (0 degC is 32 degF); adding or scaling them
-// is not, because "1 degC + 1 degC" could mean 2 degC or 275.3 K. Nodes convert
-// offset units freely and refuse the ambiguous arithmetic with a structured
-// error rather than guessing.
+// OFFSET UNITS. degC and degF measure from a non-zero zero point. Converting
+// them is well defined (0 degC is 32 degF); adding or scaling them is not,
+// because "1 degC + 1 degC" could mean 2 degC or 275.3 K. Nodes convert offset
+// units freely and refuse the ambiguous arithmetic with a structured error
+// rather than guessing.
+//
+// degR (Rankine) is NOT an offset unit despite being an imperial temperature:
+// its zero IS absolute zero, so it is purely multiplicative (1 degR = 5/9 K)
+// and arithmetic on it is unambiguous and permitted.
+//
+// A COMPOUND expression containing an offset unit — "degC/m" — is treated as
+// multiplicative, because that is what the underlying library does: it reads
+// the degC there as a temperature DIFFERENCE. Such an expression is accepted
+// and its unit comes back spelled "delta_degree_Celsius / meter", naming the
+// difference reading explicitly rather than leaving it implied.
 //
 // EVERY unit expression and every text input this package accepts is bounded in
 // length, bounded in exponent, and restricted to a conservative character set
@@ -27,7 +37,11 @@
 //   * An extreme exponent makes a conversion factor unrepresentable, and it
 //     fails SILENTLY: 2 "m**1e9" in "km**1e9" needs 1e-3**1e9, which underflows
 //     to exactly 0.0, so the answer would be 0. Absolute exponents above 50 are
-//     refused.
+//     refused, and so is any exponent that is not a bare number applied to a
+//     bare unit. Chained or grouped exponents — "m**2**2**2**2**2",
+//     "m**(9**(9**(9)))", "(((m**2)**2)**2)**2" — square the exponent at every
+//     step; before this bound they cost seconds and gigabytes. The cost of the
+//     rule is that "(m/s)**2" must be written "m**2/s**2".
 //
 // A non-zero quantity is also never allowed to convert to exactly zero through
 // a multiplicative conversion; that is reported as OVERFLOW, not as an answer.
@@ -54,7 +68,8 @@ message Error {
   //                        arithmetic operator or an unsupported format style.
   //   OVERFLOW           — the result is not representable as a finite number.
   //   INTERNAL           — this package itself faulted; the caller's input may
-  //                        be perfectly valid.
+  //                        be perfectly valid. Nodes never surface a traceback,
+  //                        so this is what an unexpected fault looks like.
   string code = 1;
   // Human-readable detail naming exactly what was rejected and why.
   string message = 2;
@@ -67,8 +82,16 @@ message Quantity {
   // INVALID_QUANTITY on input, and a computation that produces one fails with
   // OVERFLOW rather than emitting a non-finite value.
   double magnitude = 1;
-  // The unit expression, e.g. "km", "m/s", "kg*m/s**2". An empty string means
-  // dimensionless. Max 256 characters, and restricted to letters, digits,
+  // The unit expression, e.g. "km", "m/s", "kg*m/s**2". A dimensionless
+  // quantity must be spelled "dimensionless"; an EMPTY string is REJECTED.
+  //
+  // That is deliberate. proto3 has no field presence for scalars, so an unset
+  // — or edge-dropped — Quantity arrives as {magnitude: 0, units: ""}. If ""
+  // meant dimensionless, that would be a valid measurement of zero, and any
+  // upstream failure would silently become the number 0. Making "" invalid is
+  // what stops a defaulted message from impersonating an answer.
+  //
+  // Max 256 characters, and restricted to letters, digits,
   // whitespace, and the characters _ . + - * / ^ ( ) % ° µ Ω; anything else is
   // rejected with INVALID_UNIT rather than being coerced into a number. The
   // expression is Unicode NFC-normalised first, so the OHM SIGN (U+2126) and
@@ -179,8 +202,10 @@ message Comparison {
   // exact comparison would call one of them greater.
   string relation = 1;
   // left / right as a dimensionless number. Set to 0 and `ratio_defined` false
-  // when `right` has a zero magnitude in the common unit, where the ratio is
-  // undefined.
+  // when the ratio is not representable: a zero `right` magnitude, or operands
+  // so far apart that the quotient overflows or underflows (1e200 m vs
+  // 1e-200 m). The RELATION is still reported in those cases — the ordering is
+  // well defined even when the ratio is not.
   double ratio = 2;
   // Whether `ratio` is meaningful.
   bool ratio_defined = 3;
@@ -194,8 +219,8 @@ message Comparison {
 
 // A bare unit expression to inspect.
 message UnitInput {
-  // The unit expression, e.g. "hp", "kWh", "degC". Empty means dimensionless.
-  // Bounded and charset-restricted exactly as Quantity.units is.
+  // The unit expression, e.g. "hp", "kWh", "degC". Write "dimensionless"
+  // explicitly; an empty string is rejected, exactly as for Quantity.units.
   string units = 1;
 }
 
@@ -207,7 +232,8 @@ message UnitDescription {
   // Empty string for a dimensionless unit.
   string dimensionality = 2;
   // The SI base units this reduces to, e.g.
-  // "kilogram * meter ** 2 / second ** 3". Empty for a dimensionless unit.
+  // "kilogram * meter ** 2 / second ** 3", or "dimensionless" if it has none.
+  // Spelled so it can be fed straight back in as a Quantity's `units`.
   string base_units = 3;
   // The multiplicative factor to `base_units`: 1 of this unit equals
   // `base_factor` base units. For "km" this is 1000. Set to 0 and
@@ -218,8 +244,12 @@ message UnitDescription {
   bool base_factor_defined = 5;
   // True when the unit has no dimensions (e.g. "", "radian", "percent").
   bool dimensionless = 6;
-  // True when the unit measures from a non-zero zero point (degC, degF, degR).
+  // True when the unit measures from a non-zero zero point — degC and degF.
   // Such units convert but cannot be added or scaled unambiguously.
+  //
+  // False for degR (Rankine), whose zero IS absolute zero, and false for a
+  // compound expression such as "degC/m", which the underlying library reads
+  // as a temperature difference and therefore treats as multiplicative.
   bool offset_unit = 7;
   // Set when the unit could not be resolved; unset on success.
   Error error = 8;

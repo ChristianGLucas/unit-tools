@@ -23,7 +23,8 @@ from gen.messages_pb2 import (
     ParseRequest,
     UnitInput,
 )
-from nodes._units import MAX_UNIT_LEN
+from nodes import _units
+from nodes._units import MAX_UNIT_LEN, is_offset_unit, parse_unit
 from nodes.arithmetic import arithmetic
 from nodes.check_compatibility import check_compatibility
 from nodes.compare import compare
@@ -229,3 +230,129 @@ def test_nodes_are_stateless_across_invocations():
         describe_unit(ax(), UnitInput(units=units))
     after = convert(ax(), ConvertRequest(quantity=q(1.0, "mile"), to_units="km"))
     assert before == after
+
+
+EXPONENT_TOWERS = [
+    "m**2**2**2**2**2",
+    "m**2**2**2**2**2**2",
+    "m**9**9**9",
+    "m^2^2^2^2^2",
+    "km**3**3**3**3",
+]
+
+
+@pytest.mark.parametrize("units", EXPONENT_TOWERS)
+def test_exponent_towers_are_refused_before_the_parser_sees_them(units):
+    # Exponentiation is right-associative, so each "**2" SQUARES the exponent.
+    # Measured before this guard: "m**2**2**2**2**2**2" burned ~8s and ~900MB,
+    # and "m**2**2**2**2**2" produced an exponent so large that FORMATTING it
+    # for the error message raised an uncaught OverflowError. The guard must
+    # fire on the raw string, so rejection is instant.
+    start = time.monotonic()
+    for call in _every_node_call(units):
+        result = call()                      # must not raise
+        assert result.error.code == "INVALID_UNIT", (
+            f"exponent tower {units!r} was ACCEPTED "
+            f"(got {result.error.code or '<none>'})"
+        )
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"rejecting {units!r} took {elapsed:.2f}s"
+
+
+def test_an_unevaluable_unit_is_not_mistaken_for_an_offset_unit():
+    # is_offset_unit used to answer True when the base conversion blew up
+    # numerically — "conservative", but it silently DISABLED the underflow
+    # guard (skipped for offset units, where zero is a real value). The result:
+    # Convert on 1 "m**50" to "light_year**50" returned magnitude 0 with no
+    # error, and Arithmetic refused a length with OFFSET_UNIT. An extreme
+    # multiplicative unit is not an offset unit.
+    assert not is_offset_unit(parse_unit("light_year**50"))
+    assert not is_offset_unit(parse_unit("angstrom**35"))
+    # ...while genuine offset units still register.
+    assert is_offset_unit(parse_unit("degC"))
+    assert is_offset_unit(parse_unit("degF"))
+    # ...and Rankine, whose zero IS absolute zero, does not.
+    assert not is_offset_unit(parse_unit("degR"))
+
+
+def test_no_node_returns_a_silently_underflowed_zero():
+    # Table-driven across every node that performs a multiplicative
+    # conversion, because the "no silent zeros" claim is package-wide.
+    underflowing = (
+        ("Convert", lambda: convert(
+            ax(), ConvertRequest(quantity=q(1.0, "m**50"), to_units="light_year**50")
+        )),
+        ("Convert", lambda: convert(
+            ax(), ConvertRequest(quantity=q(12345.0, "m**50"), to_units="light_year**50")
+        )),
+        ("Convert", lambda: convert(
+            ax(), ConvertRequest(quantity=q(1e-320, "meter"), to_units="parsec")
+        )),
+        ("ToBaseUnits", lambda: to_base_units(ax(), q(1e-320, "angstrom"))),
+    )
+    for name, call in underflowing:
+        result = call()
+        assert result.error.code == "OVERFLOW", (
+            f"{name} returned magnitude {result.magnitude} with error "
+            f"{result.error.code or '<none>'} instead of OVERFLOW"
+        )
+
+
+# Parenthesised towers, which defeated the first (syntactic) guard: no
+# "**<number>**" adjacency, and every literal is within the exponent bound.
+PARENTHESISED_TOWERS = [
+    "m**(9**(9**(9)))",
+    "m**(50)**(50)**(50)**(50)",
+    "m**(2**(2**(2**(2**(2**(2))))))",
+    "(((m**2)**2)**2)**2",
+    "(m/s)**2",
+]
+
+
+@pytest.mark.parametrize("units", PARENTHESISED_TOWERS)
+def test_grouped_exponents_cannot_smuggle_a_tower_past_the_guard(units):
+    # The guard is structural, not syntactic: an exponent must be a bare
+    # number applied to a bare unit. "(m/s)**2" is legitimate notation and is
+    # refused too — a deliberate, documented cost of closing this hole, since
+    # "m**2/s**2" expresses the same thing.
+    start = time.monotonic()
+    for call in _every_node_call(units):
+        result = call()
+        assert result.error.code == "INVALID_UNIT", (
+            f"grouped tower {units!r} was ACCEPTED "
+            f"(got {result.error.code or '<none>'})"
+        )
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"rejecting {units!r} took {elapsed:.2f}s"
+
+
+def test_the_shared_registry_cache_stays_bounded():
+    # Pint memoises parsed expressions in a process-wide dict keyed by the
+    # caller's string, with nothing evicting. 20,000 distinct valid
+    # expressions grew it to 20,000 entries and RSS from ~44MB to ~53MB.
+    for i in range(6000):
+        describe_unit(ax(), UnitInput(units=f"m**{i % 50}/s**{(i * 7) % 50}"))
+    cache = _units._UREG._cache.parse_unit
+    assert len(cache) <= _units.MAX_PARSE_CACHE_ENTRIES, (
+        f"cache grew to {len(cache)} entries, past the "
+        f"{_units.MAX_PARSE_CACHE_ENTRIES} bound"
+    )
+    # Dropping the cache must not disturb correctness.
+    result = convert(ax(), ConvertRequest(quantity=q(1.0, "mile"), to_units="km"))
+    assert not result.error.code
+    assert result.magnitude == pytest.approx(1.609344)
+
+
+def test_a_node_fault_becomes_a_structured_internal_error(monkeypatch):
+    # No traceback may ever reach the caller: it leaks internal paths and
+    # breaks the contract that every failure arrives as a structured Error.
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated internal fault")
+
+    monkeypatch.setattr("nodes.describe_unit.base_factor", boom)
+    result = describe_unit(ax(), UnitInput(units="meter"))
+    assert result.error.code == "INTERNAL"
+    assert "RuntimeError" in result.error.message
+    # The message must not carry a traceback or a filesystem path.
+    assert "Traceback" not in result.error.message
+    assert "/" not in result.error.message

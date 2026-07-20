@@ -54,16 +54,62 @@ def test_describes_a_dimensionless_unit():
     assert_ok(result)
     assert result.dimensionless
     assert result.dimensionality == ""
-    assert result.base_units == ""
+    # base_units is spelled as a UNIT expression, so it can be fed straight
+    # back into another node; "" would be rejected there.
+    assert result.base_units == "dimensionless"
     assert result.base_factor == pytest.approx(0.01)
 
 
-def test_an_empty_expression_is_dimensionless():
-    result = _describe("")
+def test_an_empty_expression_is_rejected_rather_than_assumed_dimensionless():
+    # "" is what an unset or edge-dropped field looks like, so it must not be
+    # a valid unit. Dimensionless is written explicitly.
+    assert_error(_describe(""), "INVALID_UNIT")
+    assert_error(_describe("   "), "INVALID_UNIT")
+
+    result = _describe("dimensionless")
     assert_ok(result)
     assert result.dimensionless
-    assert result.canonical == ""
+    assert result.canonical == "dimensionless"
     assert result.base_factor == pytest.approx(1.0)
+
+
+def test_rankine_is_not_an_offset_unit():
+    # degR is an imperial temperature whose zero IS absolute zero, so it is
+    # purely multiplicative: 1 degR = 5/9 K exactly.
+    result = _describe("degR")
+    assert_ok(result)
+    assert result.canonical == "degree_Rankine"
+    assert result.dimensionality == "[temperature]"
+    assert not result.offset_unit
+    assert result.base_factor_defined
+    assert result.base_factor == pytest.approx(5.0 / 9.0)
+
+
+def test_an_underflowing_base_factor_is_reported_as_undefined():
+    # "angstrom**35" reduces by 1e-350, which underflows to exactly 0.0.
+    # Reporting base_factor=0 with base_factor_defined=True would assert that
+    # a wrong number is trustworthy.
+    result = _describe("angstrom**35")
+    assert_ok(result)
+    assert result.canonical == "angstrom ** 35"
+    assert not result.base_factor_defined
+    assert result.base_factor == 0.0
+
+
+def test_the_documented_unit_length_bound_is_the_actual_bound():
+    # LITERAL 256, not the imported constant: asserting "MAX + 1 is rejected"
+    # holds for any MAX and so cannot catch the bound being loosened.
+    # Space-padded, so raw LENGTH is what is under test rather than the
+    # exponent bound a long "m*m*m..." chain would trip first.
+    at_limit = "meter" + " " * 251
+    assert len(at_limit) == 256
+    result = _describe(at_limit)
+    assert_ok(result)
+    assert result.canonical == "meter"
+
+    over_limit = "meter" + " " * 252
+    assert len(over_limit) == 257
+    assert_error(_describe(over_limit), "INVALID_UNIT")
 
 
 def test_rejects_an_unknown_unit():

@@ -38,10 +38,29 @@ def test_precision_zero_is_honoured_rather_than_treated_as_unset():
     assert result.text == "5 meter"
 
 
-def test_a_dimensionless_quantity_renders_without_a_unit():
-    result = _format(q(0.5, ""), precision=1)
+def test_a_dimensionless_quantity_renders_with_an_explicit_unit():
+    result = _format(q(0.5, "dimensionless"), precision=1)
     assert_ok(result)
     assert result.text == "0.5 dimensionless"
+
+
+def test_rejects_an_empty_unit_rather_than_assuming_dimensionless():
+    assert_error(_format(q(0.5, "")), "INVALID_UNIT")
+
+
+def test_compact_and_pretty_differ_only_in_exponent_rendering():
+    # They are documented as distinct styles; for a unit with no exponent they
+    # are identical, and that is worth pinning so the docs stay honest.
+    for units in ("km/h", "degC", "percent"):
+        compact = _format(q(5.0, units), style="compact", precision=2)
+        pretty = _format(q(5.0, units), style="pretty", precision=2)
+        assert_ok(compact)
+        assert compact.text == pretty.text
+
+    compact = _format(q(9.81, "m/s**2"), style="compact", precision=2)
+    pretty = _format(q(9.81, "m/s**2"), style="pretty", precision=2)
+    assert compact.text == "9.81 m/s**2"
+    assert pretty.text == "9.81 m/s\u00b2"
 
 
 def test_rejects_an_unknown_style():

@@ -67,3 +67,36 @@ def test_rejects_an_unknown_unit():
 
 def test_is_deterministic():
     assert _cmp(q(1.0, "mile"), q(1.5, "km")) == _cmp(q(1.0, "mile"), q(1.5, "km"))
+
+
+def test_the_equality_tolerance_is_where_it_is_documented_to_be():
+    # Straddles RELATIVE_TOLERANCE = 1e-12 with LITERAL deltas, so loosening
+    # the constant breaks this test. Without it the tolerance could be widened
+    # a billion-fold and the suite would stay green.
+    inside = compare(ax(), CompareRequest(left=q(1.0, "m"), right=q(1.0 + 5e-13, "m")))
+    assert_ok(inside)
+    assert inside.relation == "eq"
+
+    outside = compare(ax(), CompareRequest(left=q(1.0, "m"), right=q(1.0 + 5e-12, "m")))
+    assert_ok(outside)
+    assert outside.relation == "lt"
+
+    # A difference anyone would call real must never read as equal.
+    coarse = compare(ax(), CompareRequest(left=q(1000.0, "m"), right=q(1000.5, "m")))
+    assert_ok(coarse)
+    assert coarse.relation == "lt"
+
+
+def test_orders_operands_whose_ratio_is_not_representable():
+    # The RELATION is well defined even when left/right overflows (1e400).
+    # Failing the whole comparison would refuse an ordinary question.
+    result = _cmp(q(1e200, "meter"), q(1e-200, "meter"))
+    assert_ok(result)
+    assert result.relation == "gt"
+    assert not result.ratio_defined
+    assert result.ratio == 0.0
+
+    result = _cmp(q(1e-200, "meter"), q(1e200, "meter"))
+    assert_ok(result)
+    assert result.relation == "lt"
+    assert not result.ratio_defined

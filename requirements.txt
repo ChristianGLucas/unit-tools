@@ -1,4 +1,7 @@
-# Pinned for determinism. Full transitive tree, every node permissive —
+# Pinned for determinism. This is the full transitive tree of THIS package's own
+# declared dependencies; protobuf and grpcio are supplied by the Axiom runtime and
+# are not pinned here (both permissive: protobuf BSD-3-Clause, grpcio Apache-2.0).
+# Every node below is permissive —
 # verified by reading each distribution's own LICENSE text, not registry
 # metadata:
 #   Pint              — BSD-3-Clause (owns the hard part: unit-expression
