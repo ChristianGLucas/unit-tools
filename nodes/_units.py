@@ -23,6 +23,8 @@ dimensional analysis, the ~800-entry unit registry, and offset-unit conversion.
 
 import math
 import re
+import signal
+import threading
 import unicodedata
 
 import pint
@@ -67,14 +69,34 @@ RELATIVE_TOLERANCE = 1e-12
 MAX_PRECISION = 15
 
 # Characters permitted in a unit expression: letters, digits, whitespace, and
-# the operators/symbols Pint's unit grammar actually uses. Deliberately
-# excludes brackets, commas, quotes and underscore-adjacent punctuation that
-# the parser would coerce rather than reject.
+# only the operators a real unit needs — product, quotient, power, grouping,
+# and exponent signs. Deliberately excludes brackets, commas, quotes, and the
+# arithmetic operators a unit never contains.
+#
+# '%' is NOT here, and its absence is load-bearing. Pint accepts '%' as BOTH
+# the modulo operator and an alias for `percent`, and modulo is a cost bomb:
+# "square%cubed2**8squared" (26 chars, every literal <= 50, no exponent chain,
+# so every structural guard passes) drives Pint's evaluator to ~18s and
+# ~1.7GB. The percent UNIT is still available, spelled "percent". No real unit
+# expression contains a modulo, so dropping the symbol costs nothing.
 #
 # Both Unicode spellings of micro (U+00B5 MICRO SIGN, U+03BC GREEK SMALL MU)
 # and ohm (U+03A9 GREEK CAPITAL OMEGA, U+2126 OHM SIGN) are accepted, because
 # real-world input uses each interchangeably.
-_ALLOWED_UNIT_CHARS = re.compile(r"^[0-9A-Za-z_\s.+\-*/^()%µμΩΩ°]*$")
+_ALLOWED_UNIT_CHARS = re.compile(r"^[0-9A-Za-z_\s.+\-*/^()µμΩΩ°]*$")
+
+# Wall-clock budget, in seconds, for a single Pint parse.
+#
+# The charset and structural guards enumerate KNOWN cost bombs, but Pint's
+# evaluator is a general expression interpreter, and enumerating every
+# expensive operator combination by hand is unsound — the '%' bomb slipped
+# past three rounds of shape-based guards. This is the backstop that does not
+# depend on predicting the vector: Pint's parser is pure Python, so a
+# wall-clock alarm interrupts it between bytecodes. A legitimate unit parses in
+# well under a millisecond; anything that runs past this budget is refused.
+# Only effective on the main thread (signals require it); the guards above
+# remain the first line of defence when it is not available.
+PARSE_TIMEOUT_SECONDS = 1.0
 
 # EXPONENT TOWERS are the one cost bomb a length bound cannot catch, because
 # the damage is in the VALUE, not the length. Exponentiation is
@@ -211,13 +233,62 @@ UPSTREAM_MARKER = "carries an error from an upstream node and cannot be used as 
 
 
 def _bound_parse_cache() -> None:
-    """Keep the shared registry's expression cache from growing without limit."""
-    try:
-        cache = _UREG._cache.parse_unit
-    except AttributeError:  # pragma: no cover - Pint internals moved
+    """Keep the shared registry's caller-keyed caches from growing without limit.
+
+    Pint memoises across FIVE caches keyed by the caller's expression, not one:
+    parse_unit, root_units, dimensionality, conversion_factor, and
+    dimensional_equivalents. Bounding only parse_unit leaves the other four to
+    grow linearly with the number of distinct expressions (~2 kB of RSS each),
+    which a stream of distinct valid units would drive to OOM in a long-lived
+    worker. Every dict-valued cache is cleared together once any one of them
+    passes the threshold, so memory genuinely plateaus. Correctness never
+    depends on the cache — the next lookups simply re-parse.
+    """
+    cache = getattr(_UREG, "_cache", None)
+    if cache is None:  # pragma: no cover - Pint internals moved
         return
-    if len(cache) > MAX_PARSE_CACHE_ENTRIES:
-        cache.clear()
+    dicts = [
+        v for v in vars(cache).values() if isinstance(v, dict)
+    ]
+    if any(len(d) > MAX_PARSE_CACHE_ENTRIES for d in dicts):
+        for d in dicts:
+            d.clear()
+
+
+def _bounded_unit(stripped: str, label: str):
+    """Parse a unit expression under a wall-clock budget.
+
+    The charset and structural guards catch the cost bombs we KNOW about, but
+    Pint's evaluator is a general expression interpreter and enumerating every
+    expensive operator combination by hand proved unsound (the '%' modulo bomb
+    slipped past three rounds of shape guards). This is the vector-agnostic
+    backstop: Pint's parser is pure Python, so a SIGALRM interrupts it between
+    bytecodes if it ever runs longer than a legitimate parse ever would
+    (sub-millisecond). Anything slower is refused as INVALID_UNIT.
+
+    Signals only work on the main thread. When we are not on it, the alarm is
+    silently skipped and the guards above remain the first line of defence —
+    the wrapper never fails a legitimate parse just because it could not arm.
+    """
+    can_alarm = threading.current_thread() is threading.main_thread()
+    previous = None
+    if can_alarm:
+        def _timed_out(signum, frame):
+            raise UnitError(
+                "INVALID_UNIT",
+                f"{label} took too long to evaluate (over "
+                f"{PARSE_TIMEOUT_SECONDS:g}s) and was refused as a potential "
+                f"resource-exhaustion input",
+            )
+
+        previous = signal.signal(signal.SIGALRM, _timed_out)
+        signal.setitimer(signal.ITIMER_REAL, PARSE_TIMEOUT_SECONDS)
+    try:
+        return _UREG.Unit(stripped)
+    finally:
+        if can_alarm:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
 
 
 def parse_unit(units: str, label: str = "units"):
@@ -248,7 +319,7 @@ def parse_unit(units: str, label: str = "units"):
             f"dropped field looks like, so it is not treated as a valid unit",
         )
     try:
-        unit = _UREG.Unit(stripped)
+        unit = _bounded_unit(stripped, label)
     except UnitError:
         raise
     except Exception as exc:  # pint raises a wide family of parse errors

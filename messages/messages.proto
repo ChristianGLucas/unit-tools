@@ -62,8 +62,10 @@ message Error {
   //                        being parsed is not a well-formed quantity.
   //   INCOMPATIBLE_UNITS — both units are valid but measure different
   //                        dimensions, so the operation is undefined.
-  //   OFFSET_UNIT        — the operation is ambiguous for an offset unit
-  //                        (degC/degF/degR), e.g. adding two temperatures.
+  //   OFFSET_UNIT        — the operation is ambiguous for a non-linearly-
+  //                        scalable unit: an offset scale (degC/degF), e.g.
+  //                        adding two temperatures, or a logarithmic unit
+  //                        (decibel/neper).
   //   INVALID_ARGUMENT   — a non-unit argument is wrong, e.g. an unknown
   //                        arithmetic operator or an unsupported format style.
   //   OVERFLOW           — the result is not representable as a finite number.
@@ -244,8 +246,11 @@ message UnitDescription {
   bool base_factor_defined = 5;
   // True when the unit has no dimensions (e.g. "", "radian", "percent").
   bool dimensionless = 6;
-  // True when the unit measures from a non-zero zero point — degC and degF.
-  // Such units convert but cannot be added or scaled unambiguously.
+  // True when the unit is NOT linearly scalable, so it converts but cannot be
+  // added or multiplied unambiguously. Two families qualify: OFFSET units that
+  // measure from a non-zero zero point (degC, degF) and LOGARITHMIC units
+  // (decibel, neper), which do not add linearly at all. The field name is
+  // historical; read it as "not multiplicatively scalable".
   //
   // False for degR (Rankine), whose zero IS absolute zero, and false for a
   // compound expression such as "degC/m", which the underlying library reads

@@ -93,6 +93,10 @@ expression such as `degC/m` is likewise multiplicative — Pint reads the degC
 there as a temperature *difference*, and the result comes back spelled
 `delta_degree_Celsius / meter`, naming that reading explicitly.
 
+Logarithmic units (decibel, neper) are treated the same way as offset scales:
+they are reported as `offset_unit` (read the field as "not linearly scalable")
+and their `add`/`sub` is refused, because a decibel does not add linearly.
+
 **Cancelling units.** `mul` and `div` reduce their result, so 1 km / 500 m is
 the dimensionless `2` rather than `0.002 kilometer / meter`. Genuinely distinct
 dimensions are left alone: 3 m / 1.5 s stays 2 m/s.
@@ -129,6 +133,16 @@ written `m**2/s**2`.
 The exponent cap alone is not sufficient — `angstrom**35` still reduces by
 1e-350 — so the underflow checks below are what actually guarantee it.
 
+**Bounded parsing.** Beyond the character and exponent guards, every parse
+runs under a one-second wall-clock budget. Pint's expression grammar is a
+general interpreter — the modulo operator `%` combined with a word exponent
+was a resource bomb (`square%cubed2**8squared`, ~18s/1.7GB) that no
+exponent-shape guard caught — so `%` is dropped from the accepted character set
+(the percent *unit* is still spelled `percent`), and the wall-clock alarm is
+the vector-agnostic backstop for anything a static guard might miss. The shared
+unit registry's memoisation caches are cleared once they cross a threshold, so
+a stream of distinct expressions cannot grow a long-lived worker without bound.
+
 **No non-finite values, ever, and no silent zeros.** A NaN or infinite input
 magnitude is rejected with `INVALID_QUANTITY`; a computation that overflows
 returns `OVERFLOW` instead of emitting `inf`; and a non-zero quantity that
@@ -164,7 +178,7 @@ Note that two valid but incompatible units are **not** an error from
 axiom test
 ```
 
-169 tests, including an independent-oracle suite that checks conversions
+177 tests, including an independent-oracle suite that checks conversions
 against values derived from scratch from the defining relations (1 inch =
 0.0254 m, 1 hp = 550 ft·lbf/s, F = C·9/5 + 32) rather than round-tripping
 through Pint, and a hostile-input suite covering injection strings, resource

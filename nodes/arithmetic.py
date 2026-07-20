@@ -48,16 +48,23 @@ def arithmetic(ax: AxiomContext, input: ArithmeticRequest) -> Quantity:
             )
 
         if op in ("add", "sub"):
-            # An offset unit has no zero to add from: "1 degC + 1 degC" could
-            # mean 2 degC or 275.3 K. Pint refuses this and so do we, rather
-            # than silently picking one reading.
+            # A non-linearly-scalable unit has no proportional zero to add
+            # from: "1 degC + 1 degC" could mean 2 degC or 275.3 K, and a
+            # logarithmic unit like decibel does not add linearly at all. Pint
+            # refuses both and so do we, rather than silently picking a reading.
             for label, operand in (("left", left), ("right", right)):
                 if is_offset_unit(operand.units):
+                    name = unit_name(operand.units)
+                    hint = (
+                        "convert to an absolute scale such as 'kelvin' first"
+                        if "degree" in name
+                        else "operate on its underlying linear quantity instead"
+                    )
                     raise UnitError(
                         "OFFSET_UNIT",
-                        f"{op} is ambiguous for {label} operand "
-                        f"{unit_name(operand.units)!r}, an offset unit; convert "
-                        f"to an absolute scale such as 'kelvin' first",
+                        f"{op} is ambiguous for {label} operand {name!r}, which "
+                        f"is not linearly scalable (an offset or logarithmic "
+                        f"unit); {hint}",
                     )
             try:
                 result = guard_numeric(

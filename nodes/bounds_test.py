@@ -440,3 +440,94 @@ def test_a_multiplication_that_overflows_the_exponent_range_is_overflow():
         ),
     )
     assert result.error.code == "OVERFLOW"
+
+
+# The '%' character is BOTH Pint's modulo operator and an alias for `percent`.
+# Combined with a word-exponent token it is a cost bomb that no exponent-shape
+# guard catches: "square%cubed2**8squared" (26 chars, literals <=50, no
+# exponent chain) drove Pint to ~18s / 1.7GB. '%' is dropped from the charset,
+# so it is refused instantly; the percent unit is still spelled "percent".
+MODULO_BOMBS = [
+    "square%cubed2**8squared",
+    "square%cubed2**50squared",
+    "m%s",
+    "percent%m**8",
+]
+
+
+@pytest.mark.parametrize("units", MODULO_BOMBS)
+def test_the_modulo_operator_is_refused_instantly(units):
+    start = time.monotonic()
+    for call in _every_node_call(units):
+        result = call()
+        assert result.error.code == "INVALID_UNIT", (
+            f"modulo input {units!r} was ACCEPTED "
+            f"(got {result.error.code or '<none>'})"
+        )
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"rejecting {units!r} took {elapsed:.2f}s"
+
+
+def test_percent_is_still_available_as_a_word():
+    # Dropping '%' must not remove the percent UNIT — only the symbol.
+    result = describe_unit(ax(), UnitInput(units="percent"))
+    assert not result.error.code
+    assert result.canonical == "percent"
+    assert result.dimensionless
+
+
+def test_the_parse_wall_clock_backstop_bounds_an_unforeseen_cost_bomb():
+    # A vector-agnostic guarantee: even if some future Pint expression evaded
+    # every static guard, the wall-clock alarm refuses anything that runs
+    # longer than a legitimate parse ever would. Simulate a pathological parse
+    # by monkeypatching the registry's Unit() to hang, and confirm the wrapper
+    # converts the timeout into INVALID_UNIT rather than blocking forever.
+    import time as _time
+    from nodes import _units
+
+    original = _units._UREG.Unit
+
+    def _slow(expr):
+        deadline = _time.monotonic() + 10.0
+        while _time.monotonic() < deadline:
+            pass  # pure-Python spin, interruptible by SIGALRM between bytecodes
+        return original(expr)
+
+    _units._UREG.Unit = _slow
+    try:
+        start = _time.monotonic()
+        result = describe_unit(ax(), UnitInput(units="meter"))
+        elapsed = _time.monotonic() - start
+    finally:
+        _units._UREG.Unit = original
+
+    assert result.error.code == "INVALID_UNIT"
+    assert elapsed < _units.PARSE_TIMEOUT_SECONDS + 0.5, (
+        f"the wall-clock backstop did not fire — took {elapsed:.2f}s"
+    )
+
+
+def test_all_caller_keyed_caches_stay_bounded():
+    # Pint memoises across FIVE caches keyed by the caller's expression, not
+    # one. Bounding only parse_unit leaves root_units / dimensionality /
+    # conversion_factor / dimensional_equivalents to grow to OOM. Every
+    # dimensionality-touching node populates them, so feed enough distinct
+    # valid expressions to cross the threshold and assert they all stay
+    # bounded rather than growing with the input.
+    from nodes import _units
+
+    for a in range(1, 20):
+        for b in range(1, 20):
+            for c in range(1, 20):
+                describe_unit(ax(), UnitInput(units=f"m**{a}*s**{b}*kg**{c}"))
+
+    caches = [v for v in vars(_units._UREG._cache).values() if isinstance(v, dict)]
+    assert caches, "expected Pint to expose dict caches"
+    for cache in caches:
+        assert len(cache) <= 2 * _units.MAX_PARSE_CACHE_ENTRIES, (
+            f"a registry cache grew to {len(cache)} entries — not bounded"
+        )
+    # Correctness survives the periodic clears.
+    result = convert(ax(), ConvertRequest(quantity=q(1.0, "mile"), to_units="km"))
+    assert not result.error.code
+    assert result.magnitude == pytest.approx(1.609344)
