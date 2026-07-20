@@ -15,8 +15,9 @@ _STYLES = {
 
 def format(ax: AxiomContext, input: FormatRequest) -> FormattedQuantity:
     """Render a quantity as human-readable text at a chosen precision and unit
-    style — spelled out ("5.00 kilometer / hour"), compact ("5.00 km/h"), or
-    pretty with unicode exponents.
+    style — spelled out ("kilometer / hour"), compact ("km/h"), or pretty with
+    unicode exponents. Precision defaults to 6, so 5 km/h renders
+    "5.000000 kilometer / hour".
     """
     try:
         quantity = quantity_from(input.quantity)
