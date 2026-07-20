@@ -133,15 +133,20 @@ written `m**2/s**2`.
 The exponent cap alone is not sufficient — `angstrom**35` still reduces by
 1e-350 — so the underflow checks below are what actually guarantee it.
 
-**Bounded parsing.** Beyond the character and exponent guards, every parse
-runs under a one-second wall-clock budget. Pint's expression grammar is a
-general interpreter — the modulo operator `%` combined with a word exponent
-was a resource bomb (`square%cubed2**8squared`, ~18s/1.7GB) that no
-exponent-shape guard caught — so `%` is dropped from the accepted character set
-(the percent *unit* is still spelled `percent`), and the wall-clock alarm is
-the vector-agnostic backstop for anything a static guard might miss. The shared
-unit registry's memoisation caches are cleared once they cross a threshold, so
-a stream of distinct expressions cannot grow a long-lived worker without bound.
+**Bounded parsing.** Pint's expression grammar is a general interpreter, so a
+single input can be made expensive. Every known cost bomb is closed before the
+parser runs, thread-independently: exponent towers and grouped/word-form
+exponents by the structural guards (checked on the string Pint will actually
+tokenise), and the modulo operator `%` — combined with a word exponent it was a
+bomb (`square%cubed2**8squared`, ~18s/1.7GB) — by dropping `%` from the accepted
+character set (the percent *unit* is still spelled `percent`). For any
+not-yet-enumerated CPU vector the backstop is the platform's own per-invocation
+timeout, which bounds a runaway node regardless of thread. Memory is bounded
+directly: the shared unit registry keeps several caller-keyed memoisation caches
+(including one, `_base_units_cache`, that is easy to miss because it is not under
+the main cache object), and all of them are cleared once any crosses a
+threshold, so a stream of distinct expressions cannot grow a long-lived worker
+without bound.
 
 **No non-finite values, ever, and no silent zeros.** A NaN or infinite input
 magnitude is rejected with `INVALID_QUANTITY`; a computation that overflows
@@ -178,7 +183,7 @@ Note that two valid but incompatible units are **not** an error from
 axiom test
 ```
 
-177 tests, including an independent-oracle suite that checks conversions
+176 tests, including an independent-oracle suite that checks conversions
 against values derived from scratch from the defining relations (1 inch =
 0.0254 m, 1 hp = 550 ft·lbf/s, F = C·9/5 + 32) rather than round-tripping
 through Pint, and a hostile-input suite covering injection strings, resource

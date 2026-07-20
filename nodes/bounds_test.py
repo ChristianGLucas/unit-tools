@@ -476,53 +476,28 @@ def test_percent_is_still_available_as_a_word():
     assert result.dimensionless
 
 
-def test_the_parse_wall_clock_backstop_bounds_an_unforeseen_cost_bomb():
-    # A vector-agnostic guarantee: even if some future Pint expression evaded
-    # every static guard, the wall-clock alarm refuses anything that runs
-    # longer than a legitimate parse ever would. Simulate a pathological parse
-    # by monkeypatching the registry's Unit() to hang, and confirm the wrapper
-    # converts the timeout into INVALID_UNIT rather than blocking forever.
-    import time as _time
-    from nodes import _units
-
-    original = _units._UREG.Unit
-
-    def _slow(expr):
-        deadline = _time.monotonic() + 10.0
-        while _time.monotonic() < deadline:
-            pass  # pure-Python spin, interruptible by SIGALRM between bytecodes
-        return original(expr)
-
-    _units._UREG.Unit = _slow
-    try:
-        start = _time.monotonic()
-        result = describe_unit(ax(), UnitInput(units="meter"))
-        elapsed = _time.monotonic() - start
-    finally:
-        _units._UREG.Unit = original
-
-    assert result.error.code == "INVALID_UNIT"
-    assert elapsed < _units.PARSE_TIMEOUT_SECONDS + 0.5, (
-        f"the wall-clock backstop did not fire — took {elapsed:.2f}s"
-    )
-
-
 def test_all_caller_keyed_caches_stay_bounded():
-    # Pint memoises across FIVE caches keyed by the caller's expression, not
-    # one. Bounding only parse_unit leaves root_units / dimensionality /
-    # conversion_factor / dimensional_equivalents to grow to OOM. Every
-    # dimensionality-touching node populates them, so feed enough distinct
-    # valid expressions to cross the threshold and assert they all stay
-    # bounded rather than growing with the input.
+    # Pint memoises the caller's expression across SEVERAL caches, and they
+    # live in two places: the dicts inside _UREG._cache (parse_unit,
+    # root_units, dimensionality, conversion_factor, dimensional_equivalents)
+    # AND a SEPARATE top-level dict, _UREG._base_units_cache, populated by
+    # base-unit reduction. Missing the latter let it grow 1:1 with distinct
+    # compound units — 110k distinct units drove RSS from 44MB to 144MB,
+    # unbounded, to OOM. Feed enough DISTINCT compound units through the
+    # dimensionality-and-base-unit path to cross the threshold many times over
+    # and assert EVERY registry cache stays bounded rather than tracking the
+    # input.
     from nodes import _units
 
-    for a in range(1, 20):
-        for b in range(1, 20):
-            for c in range(1, 20):
+    for a in range(1, 30):
+        for b in range(1, 30):
+            for c in range(1, 30):
                 describe_unit(ax(), UnitInput(units=f"m**{a}*s**{b}*kg**{c}"))
 
-    caches = [v for v in vars(_units._UREG._cache).values() if isinstance(v, dict)]
-    assert caches, "expected Pint to expose dict caches"
+    caches = _units._registry_cache_dicts()
+    assert len(caches) >= 6, "expected _cache dicts AND _base_units_cache"
+    base = _units._UREG._base_units_cache
+    assert any(d is base for d in caches), "_base_units_cache must be bounded"
     for cache in caches:
         assert len(cache) <= 2 * _units.MAX_PARSE_CACHE_ENTRIES, (
             f"a registry cache grew to {len(cache)} entries — not bounded"

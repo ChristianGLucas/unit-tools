@@ -93,11 +93,13 @@ message Quantity {
   // upstream failure would silently become the number 0. Making "" invalid is
   // what stops a defaulted message from impersonating an answer.
   //
-  // Max 256 characters, and restricted to letters, digits,
-  // whitespace, and the characters _ . + - * / ^ ( ) % ° µ Ω; anything else is
-  // rejected with INVALID_UNIT rather than being coerced into a number. The
-  // expression is Unicode NFC-normalised first, so the OHM SIGN (U+2126) and
-  // GREEK CAPITAL OMEGA (U+03A9) spellings of "Ω" both resolve.
+  // Max 256 characters, and restricted to letters, digits, whitespace, and the
+  // characters _ . + - * / ^ ( ) ° µ Ω; anything else is rejected with
+  // INVALID_UNIT rather than being coerced into a number. In particular '%' is
+  // NOT permitted — write the percent unit as "percent"; the modulo operator
+  // that '%' also denotes is a parser cost bomb. The expression is Unicode
+  // NFC-normalised first, so the OHM SIGN (U+2126) and GREEK CAPITAL OMEGA
+  // (U+03A9) spellings of "Ω" both resolve.
   //
   // On output this is always Pint's canonical spelling of the unit, so
   // "metre", "metres" and "m" all come back as "meter".

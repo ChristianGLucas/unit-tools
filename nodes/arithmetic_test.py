@@ -101,10 +101,11 @@ def test_logarithmic_units_are_refused_without_a_kelvin_hint():
     # A decibel is logarithmic, not an offset temperature: adding it is refused
     # (OFFSET_UNIT), but the message must NOT tell the caller to "convert to
     # kelvin" — nonsensical for a non-temperature.
-    result = _op(q(3.0, "decibel"), "add", q(3.0, "decibel"))
-    assert_error(result, "OFFSET_UNIT")
-    assert "kelvin" not in result.error.message
-    assert "logarithmic" in result.error.message
+    for op in ("add", "sub", "mul", "div"):
+        result = _op(q(3.0, "decibel"), op, q(3.0, "decibel"))
+        assert_error(result, "OFFSET_UNIT")
+        assert "kelvin" not in result.error.message, f"{op}: {result.error.message}"
+        assert "logarithmic" in result.error.message, f"{op}: {result.error.message}"
 
 
 def test_the_explicit_difference_unit_multiplies_without_ambiguity():

@@ -115,20 +115,21 @@ def arithmetic(ax: AxiomContext, input: ArithmeticRequest) -> Quantity:
         ax.log.info("arithmetic rejected input", code=exc.code)
         return Quantity(error={"code": exc.code, "message": exc.message})
     except pint.OffsetUnitCalculusError as exc:
-        # Multiplying or dividing an offset unit — "degC * m" — is ambiguous
-        # for the same reason adding one is: is the degC a temperature or a
-        # temperature difference? Pint refuses it, and so do we. This MUST come
-        # before the catch-all below; otherwise it is dead code and the case
-        # is mislabelled INTERNAL (the caller's input is perfectly valid).
-        ax.log.info("arithmetic rejected offset operand")
+        # Multiplying or dividing a non-linearly-scalable unit — "degC * m", or
+        # a logarithmic "decibel * m" — is ambiguous for the same reason adding
+        # one is, and Pint refuses it. This MUST come before the catch-all
+        # below; otherwise it is dead code and the case is mislabelled INTERNAL
+        # (the caller's input is perfectly valid). The message stays generic
+        # rather than naming 'kelvin', which is meaningless for a decibel.
+        ax.log.info("arithmetic rejected non-scalable operand")
         return Quantity(
             error={
                 "code": "OFFSET_UNIT",
                 "message": (
-                    f"ambiguous {input.op} involving an offset unit "
-                    f"(degC/degF); convert to an absolute scale such as "
-                    f"'kelvin', or use the explicit difference unit "
-                    f"'delta_degC', first: {exc}"
+                    f"ambiguous {input.op} involving a unit that is not "
+                    f"linearly scalable (an offset scale like degC, or a "
+                    f"logarithmic unit like decibel); operate on its "
+                    f"underlying linear quantity instead: {exc}"
                 ),
             }
         )
