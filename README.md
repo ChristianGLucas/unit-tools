@@ -22,7 +22,7 @@ Every node consumes and emits the same `Quantity`: a finite `magnitude` and a
 "m/s"          metre per second
 "kg*m/s**2"    newton, spelled out
 "degC"         degree Celsius (an offset unit)
-""             dimensionless
+"dimensionless"  the dimensionless unit ("" is rejected — see below)
 ```
 
 A dimensionless quantity is spelled `"dimensionless"`, never `""`. That is
@@ -164,7 +164,7 @@ Note that two valid but incompatible units are **not** an error from
 axiom test
 ```
 
-165 tests, including an independent-oracle suite that checks conversions
+169 tests, including an independent-oracle suite that checks conversions
 against values derived from scratch from the defining relations (1 inch =
 0.0254 m, 1 hp = 550 ft·lbf/s, F = C·9/5 + 32) rather than round-tripping
 through Pint, and a hostile-input suite covering injection strings, resource

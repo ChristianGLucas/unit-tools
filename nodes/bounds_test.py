@@ -412,3 +412,31 @@ def test_a_single_word_exponent_is_still_accepted():
         result = describe_unit(ax(), UnitInput(units=expr))
         assert not result.error.code, f"{expr!r}: {result.error.message}"
         assert result.canonical == expected
+
+
+# A unit whose exponent is within the bound (<=50) but whose base-unit
+# reduction still overflows float64 — light_year**40 reduces by ~1e360. The
+# numeric blow-up must surface as OVERFLOW (the result is out of range), NOT
+# INTERNAL (which would falsely blame the package for the caller's valid, if
+# extreme, input). This pins guard_numeric's error code across every node that
+# reduces to base units.
+NUMERIC_OVERFLOW_UNITS = ["light_year**40", "parsec**45", "light_year**50"]
+
+
+@pytest.mark.parametrize("units", NUMERIC_OVERFLOW_UNITS)
+def test_a_base_reduction_that_overflows_is_overflow_not_internal(units):
+    assert to_base_units(ax(), q(1.0, units)).error.code == "OVERFLOW"
+    assert describe_unit(ax(), UnitInput(units=units)).error.code == "OVERFLOW"
+
+
+def test_a_multiplication_that_overflows_the_exponent_range_is_overflow():
+    # Two large-exponent operands whose product overflows during reduction.
+    result = arithmetic(
+        ax(),
+        ArithmeticRequest(
+            left=q(1e300, "light_year**20"),
+            op="mul",
+            right=q(1e300, "light_year**20"),
+        ),
+    )
+    assert result.error.code == "OVERFLOW"
