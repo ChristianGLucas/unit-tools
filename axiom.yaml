@@ -1,5 +1,5 @@
 name: christiangeorgelucas/unit-tools
-version: 0.2.0
+version: 0.2.1
 language: python
 description: >-
   Composable physical-unit nodes over a single Quantity envelope — parse a

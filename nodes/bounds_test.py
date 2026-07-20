@@ -356,3 +356,24 @@ def test_a_node_fault_becomes_a_structured_internal_error(monkeypatch):
     # The message must not carry a traceback or a filesystem path.
     assert "Traceback" not in result.error.message
     assert "/" not in result.error.message
+
+
+def test_an_upstream_error_is_annotated_once_not_once_per_hop():
+    # Relaying a failure through several nodes must not nest the prefix; in a
+    # long flow that buries the root cause under repeated boilerplate.
+    broken = Quantity(
+        magnitude=0.0,
+        units="",
+        error={"code": "INVALID_UNIT", "message": "'kmm' is not defined"},
+    )
+    first = to_base_units(ax(), broken)
+    assert first.error.code == "INVALID_UNIT"
+    assert first.error.message.count(_units.UPSTREAM_MARKER) == 1
+
+    # Feed the node's own error output back in, as a flow edge would.
+    second = to_base_units(ax(), first)
+    third = convert(ax(), ConvertRequest(quantity=second, to_units="m"))
+    assert third.error.code == "INVALID_UNIT"
+    assert third.error.message.count(_units.UPSTREAM_MARKER) == 1
+    # The root cause survives every hop.
+    assert "'kmm' is not defined" in third.error.message

@@ -195,6 +195,10 @@ def _check_expression(expr: str, code: str, label: str) -> str:
 # input without touching the hot path for ordinary traffic.
 MAX_PARSE_CACHE_ENTRIES = 4096
 
+# Marks an error that originated upstream, so a Quantity relayed across several
+# nodes is annotated once rather than once per hop.
+UPSTREAM_MARKER = "carries an error from an upstream node and cannot be used as input"
+
 
 def _bound_parse_cache() -> None:
     """Keep the shared registry's expression cache from growing without limit."""
@@ -338,11 +342,13 @@ def quantity_from(msg, label: str = "quantity"):
     becomes the number zero.
     """
     if msg.error.code:
-        raise UnitError(
-            msg.error.code,
-            f"{label} carries an error from an upstream node and cannot be "
-            f"used as input: {msg.error.message}",
-        )
+        # Propagate the ROOT cause, annotated exactly once. Re-wrapping at
+        # every hop would nest the prefix linearly with chain length, burying
+        # the actual failure under repeated boilerplate in a long flow.
+        message = msg.error.message
+        if UPSTREAM_MARKER not in message:
+            message = f"{label} {UPSTREAM_MARKER}: {message}"
+        raise UnitError(msg.error.code, message)
     magnitude = check_magnitude(msg.magnitude, f"{label}.magnitude")
     unit = parse_unit(msg.units, f"{label}.units")
     return _UREG.Quantity(magnitude, unit)
