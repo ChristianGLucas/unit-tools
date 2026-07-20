@@ -1,0 +1,16 @@
+# Pinned for determinism. Full transitive tree, every node permissive —
+# verified by reading each distribution's own LICENSE text, not registry
+# metadata:
+#   Pint              — BSD-3-Clause (owns the hard part: unit-expression
+#                       parsing, dimensional analysis, the unit registry, and
+#                       offset-unit conversion)
+#   flexcache         — BSD-3-Clause (Pint's registry cache)
+#   flexparser        — BSD-3-Clause (Pint's definition-file parser)
+#   platformdirs      — MIT (cache path resolution; cache is disabled here)
+#   typing_extensions — PSF-2.0
+# No copyleft anywhere in the tree.
+Pint==0.25.3
+flexcache==0.3
+flexparser==0.4
+platformdirs==4.10.1
+typing_extensions==4.16.0

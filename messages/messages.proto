@@ -1,0 +1,247 @@
+// Data contracts for christiangeorgelucas/unit-tools.
+//
+// The vocabulary is physical quantities: a magnitude paired with a unit
+// expression, e.g. 9.81 "m/s**2". Unit expressions are written the way Pint
+// spells them — SI prefixes, aliases ("meter", "metre", "m"), products with
+// "*", quotients with "/", and powers with "**" or "^":
+//
+//   "km"                 kilometre
+//   "m/s"                metre per second
+//   "kg*m/s**2"          newton, spelled out
+//   "degC"               degree Celsius (an OFFSET unit, see below)
+//   ""                   dimensionless
+//
+// OFFSET UNITS. degC, degF and degR measure from a non-zero zero point.
+// Converting them is well defined (0 degC is 32 degF); adding or scaling them
+// is not, because "1 degC + 1 degC" could mean 2 degC or 275.3 K. Nodes convert
+// offset units freely and refuse the ambiguous arithmetic with a structured
+// error rather than guessing.
+//
+// EVERY unit expression and every text input this package accepts is bounded in
+// length, bounded in exponent, and restricted to a conservative character set
+// before it reaches the parser. Each bound answers a measured behaviour:
+//
+//   * The parser reads "[1,2,3] meter" as 123 metre — punctuation coerced into
+//     digits, turning malformed input into a plausible wrong answer.
+//   * A long operator chain drives it into unbounded recursion.
+//   * An extreme exponent makes a conversion factor unrepresentable, and it
+//     fails SILENTLY: 2 "m**1e9" in "km**1e9" needs 1e-3**1e9, which underflows
+//     to exactly 0.0, so the answer would be 0. Absolute exponents above 50 are
+//     refused.
+//
+// A non-zero quantity is also never allowed to convert to exactly zero through
+// a multiplicative conversion; that is reported as OVERFLOW, not as an answer.
+//
+// Nodes never raise for bad input. Every output message carries an `error`
+// field that is unset on success and populated on failure.
+
+syntax = "proto3";
+
+package christiangeorgelucas.unit_tools;
+
+// A structured, deterministic failure. Unset on success.
+message Error {
+  // Stable machine-readable code, one of:
+  //   INVALID_UNIT       — the unit expression is malformed, unknown, or was
+  //                        rejected by the input guard (charset/length).
+  //   INVALID_QUANTITY   — the magnitude is not a finite number, or the text
+  //                        being parsed is not a well-formed quantity.
+  //   INCOMPATIBLE_UNITS — both units are valid but measure different
+  //                        dimensions, so the operation is undefined.
+  //   OFFSET_UNIT        — the operation is ambiguous for an offset unit
+  //                        (degC/degF/degR), e.g. adding two temperatures.
+  //   INVALID_ARGUMENT   — a non-unit argument is wrong, e.g. an unknown
+  //                        arithmetic operator or an unsupported format style.
+  //   OVERFLOW           — the result is not representable as a finite number.
+  //   INTERNAL           — this package itself faulted; the caller's input may
+  //                        be perfectly valid.
+  string code = 1;
+  // Human-readable detail naming exactly what was rejected and why.
+  string message = 2;
+}
+
+// The canonical quantity envelope every node in this package consumes AND
+// emits: a finite magnitude paired with a unit expression.
+message Quantity {
+  // The numeric magnitude. Must be finite — NaN and infinity are rejected with
+  // INVALID_QUANTITY on input, and a computation that produces one fails with
+  // OVERFLOW rather than emitting a non-finite value.
+  double magnitude = 1;
+  // The unit expression, e.g. "km", "m/s", "kg*m/s**2". An empty string means
+  // dimensionless. Max 256 characters, and restricted to letters, digits,
+  // whitespace, and the characters _ . + - * / ^ ( ) % ° µ Ω; anything else is
+  // rejected with INVALID_UNIT rather than being coerced into a number. The
+  // expression is Unicode NFC-normalised first, so the OHM SIGN (U+2126) and
+  // GREEK CAPITAL OMEGA (U+03A9) spellings of "Ω" both resolve.
+  //
+  // On output this is always Pint's canonical spelling of the unit, so
+  // "metre", "metres" and "m" all come back as "meter".
+  string units = 2;
+  // Set when the operation failed; unset on success.
+  Error error = 3;
+}
+
+// Free text to be parsed into a Quantity.
+message ParseRequest {
+  // A magnitude and unit written together, e.g. "5 km/h", "-3.2e4 J",
+  // "9.81 m/s**2", or a bare number like "42" (dimensionless).
+  //
+  // Parsing is STRICT: the text must be exactly one number followed by an
+  // optional unit expression. Text containing any character outside the allowed
+  // set — brackets, commas, quotes — is rejected with INVALID_QUANTITY rather
+  // than being coerced, because the underlying parser would otherwise read
+  // "[1,2,3] meter" as 123 metre. Max 512 characters.
+  string text = 1;
+}
+
+// A quantity plus the unit to express it in.
+message ConvertRequest {
+  // The quantity to convert.
+  Quantity quantity = 1;
+  // The target unit expression, e.g. "mi/h". Must measure the same dimension
+  // as `quantity.units` or the conversion fails with INCOMPATIBLE_UNITS.
+  // Converting between offset units (degC to degF) is supported.
+  string to_units = 2;
+}
+
+// A quantity plus how to render it.
+message FormatRequest {
+  // The quantity to render.
+  Quantity quantity = 1;
+  // Unit-formatting style, one of "default" (Pint's own spelling, e.g.
+  // "5.000000 kilometer / hour"), "compact" (symbols, e.g. "5.000000 km/h"),
+  // or "pretty" (unicode exponents). Empty means "default". Any other value is
+  // rejected with INVALID_ARGUMENT.
+  string style = 2;
+  // Number of digits after the decimal point for the magnitude. Must be
+  // 0..15; negative values or values above 15 are rejected with
+  // INVALID_ARGUMENT. Defaults to 6 when `use_precision` is false.
+  int32 precision = 3;
+  // Whether `precision` is meaningful. Proto3 cannot tell an unset int32 from
+  // 0, and 0 is a legitimate precision, so this flag disambiguates.
+  bool use_precision = 4;
+}
+
+// Rendered text.
+message FormattedQuantity {
+  // The rendered quantity, e.g. "5.000000 kilometer / hour".
+  string text = 1;
+  // Set when formatting failed; unset on success.
+  Error error = 2;
+}
+
+// Two quantities and an operation to combine them.
+message ArithmeticRequest {
+  // Left operand.
+  Quantity left = 1;
+  // The operation, one of "add", "sub", "mul", "div". Any other value is
+  // rejected with INVALID_ARGUMENT.
+  //
+  // "add" and "sub" require compatible dimensions and are refused for offset
+  // units (degC/degF/degR) with OFFSET_UNIT, because the result is ambiguous.
+  // The result keeps the LEFT operand's unit: 1 km + 500 m is 1.5 km.
+  //
+  // "mul" and "div" accept any dimensions and produce the combined unit,
+  // reduced so that units of the same dimension cancel — 1 km / 500 m is the
+  // dimensionless 2, not "0.002 kilometer / meter" — while genuinely distinct
+  // dimensions are left alone, so 3 m / 1.5 s is 2 m/s. Dividing by a
+  // zero-magnitude right operand fails with OVERFLOW.
+  string op = 2;
+  // Right operand.
+  Quantity right = 3;
+}
+
+// Two quantities to order against each other.
+message CompareRequest {
+  // Left operand.
+  Quantity left = 1;
+  // Right operand. Must measure the same dimension as `left`, or the
+  // comparison fails with INCOMPATIBLE_UNITS.
+  Quantity right = 2;
+}
+
+// How two quantities order.
+message Comparison {
+  // "lt", "eq", or "gt", describing `left` relative to `right` after both are
+  // converted to a common unit. Unset when `error` is set.
+  //
+  // "eq" means equal to within a relative tolerance of 1e-12, not bit-identical.
+  // Conversion is floating-point, so quantities that are equal BY DEFINITION
+  // can differ in the last bits — 0 degC reduces to exactly 273.15 K while
+  // 32 degF, the same temperature, reduces to 273.15000000000003 K — and an
+  // exact comparison would call one of them greater.
+  string relation = 1;
+  // left / right as a dimensionless number. Set to 0 and `ratio_defined` false
+  // when `right` has a zero magnitude in the common unit, where the ratio is
+  // undefined.
+  double ratio = 2;
+  // Whether `ratio` is meaningful.
+  bool ratio_defined = 3;
+  // The unit both operands were converted to before comparing — the SI base
+  // representation of their shared dimension, e.g. "meter" for a length, or
+  // "kelvin" for a temperature given in degC.
+  string common_units = 4;
+  // Set when the comparison failed; unset on success.
+  Error error = 5;
+}
+
+// A bare unit expression to inspect.
+message UnitInput {
+  // The unit expression, e.g. "hp", "kWh", "degC". Empty means dimensionless.
+  // Bounded and charset-restricted exactly as Quantity.units is.
+  string units = 1;
+}
+
+// What a unit expression means.
+message UnitDescription {
+  // Pint's canonical spelling of the input, e.g. "horsepower" for "hp".
+  string canonical = 1;
+  // The physical dimensions, e.g. "[mass] * [length] ** 2 / [time] ** 3".
+  // Empty string for a dimensionless unit.
+  string dimensionality = 2;
+  // The SI base units this reduces to, e.g.
+  // "kilogram * meter ** 2 / second ** 3". Empty for a dimensionless unit.
+  string base_units = 3;
+  // The multiplicative factor to `base_units`: 1 of this unit equals
+  // `base_factor` base units. For "km" this is 1000. Set to 0 and
+  // `base_factor_defined` false for offset units, where a single factor cannot
+  // describe the conversion.
+  double base_factor = 4;
+  // Whether `base_factor` is meaningful.
+  bool base_factor_defined = 5;
+  // True when the unit has no dimensions (e.g. "", "radian", "percent").
+  bool dimensionless = 6;
+  // True when the unit measures from a non-zero zero point (degC, degF, degR).
+  // Such units convert but cannot be added or scaled unambiguously.
+  bool offset_unit = 7;
+  // Set when the unit could not be resolved; unset on success.
+  Error error = 8;
+}
+
+// Two unit expressions to test for interconvertibility.
+message CompatibilityRequest {
+  // First unit expression.
+  string units_a = 1;
+  // Second unit expression.
+  string units_b = 2;
+}
+
+// Whether two units measure the same thing.
+message Compatibility {
+  // True when a quantity in `units_a` can be converted to `units_b`.
+  bool compatible = 1;
+  // Dimensionality of `units_a`, e.g. "[length] / [time]".
+  string dimensionality_a = 2;
+  // Dimensionality of `units_b`.
+  string dimensionality_b = 3;
+  // The multiplicative factor from `units_a` to `units_b`: 1 units_a equals
+  // `factor` units_b. Set to 0 and `factor_defined` false when the units are
+  // incompatible or either is an offset unit.
+  double factor = 4;
+  // Whether `factor` is meaningful.
+  bool factor_defined = 5;
+  // Set when either unit could not be resolved; unset on success. Note that
+  // two VALID but incompatible units are NOT an error — that is the answer,
+  // reported as compatible=false.
+  Error error = 6;
+}

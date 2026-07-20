@@ -1,0 +1,112 @@
+# unit-tools
+
+Composable physical-unit nodes for the [Axiom](https://axiom.dev) marketplace,
+published as `christiangeorgelucas/unit-tools`.
+
+Unit arithmetic is a place where plausible-looking wrong answers are easy to
+produce and hard to notice. This package does it properly: every node runs on
+[Pint](https://github.com/hgrecco/pint), which owns the algorithmically hard
+parts — parsing unit expressions, dimensional analysis, its ~800-entry unit
+registry, and offset-scale conversion — while this package supplies a single
+canonical envelope, a strict input contract, and a consistent error vocabulary.
+
+Fully offline, stateless, deterministic. No API keys, no network, no secrets.
+
+## The envelope
+
+Every node consumes and emits the same `Quantity`: a finite `magnitude` and a
+`units` expression written the way Pint spells it.
+
+```
+"km"           kilometre
+"m/s"          metre per second
+"kg*m/s**2"    newton, spelled out
+"degC"         degree Celsius (an offset unit)
+""             dimensionless
+```
+
+Because the envelope is shared, nodes chain directly — `Parse` → `Convert` →
+`Format` needs no adapters.
+
+## Nodes
+
+| Node | Does |
+|---|---|
+| `Parse` | `"5 km/h"` → magnitude 5.0, units `kilometer / hour` |
+| `Convert` | Express a quantity in another unit of the same dimension |
+| `ToBaseUnits` | Reduce to SI base units (1 hp → 745.7 kg·m²/s³) |
+| `Format` | Render as text at a chosen precision and unit style |
+| `Arithmetic` | `add` / `sub` / `mul` / `div`, units carried through |
+| `Compare` | Order two quantities written in different units |
+| `DescribeUnit` | Canonical name, dimensions, base units, base factor |
+| `CheckCompatibility` | Are two units interconvertible, and by what factor? |
+
+## Behaviour worth knowing
+
+**Offset temperature scales.** degC, degF and degR measure from a non-zero
+zero. Converting them is well defined and fully supported (0 degC → 32 degF).
+Adding them is *not* — "1 degC + 1 degC" could mean 2 degC or 275.3 K — so
+`Arithmetic` refuses it with an `OFFSET_UNIT` error rather than picking a
+reading. `Compare` handles them by reducing both sides to kelvin first, so
+0 degC and 32 degF compare equal.
+
+**Cancelling units.** `mul` and `div` reduce their result, so 1 km / 500 m is
+the dimensionless `2` rather than `0.002 kilometer / meter`. Genuinely distinct
+dimensions are left alone: 3 m / 1.5 s stays 2 m/s.
+
+**Equality is within tolerance.** `Compare` calls two magnitudes equal when
+they agree to a relative tolerance of 1e-12, because conversion is
+floating-point: 0 degC reduces to exactly 273.15 K while 32 degF — the same
+temperature — reduces to 273.15000000000003 K.
+
+**Strict input.** Pint's expression parser is permissive enough to read
+`"[1,2,3] meter"` as 123 metre, and a long operator chain drives it into
+unbounded recursion. Both are rejected here, before the string reaches the
+parser: unit expressions are capped at 256 characters and restricted to a
+conservative character set, and `Parse` reads the magnitude itself so that
+exactly one well-formed number is accepted. Unicode is NFC-normalised first, so
+both the OHM SIGN and GREEK CAPITAL OMEGA spellings of `Ω` resolve.
+
+Unit exponents are capped at an absolute value of 50 — far above any real
+expression — because beyond that a conversion factor stops being representable
+and fails *silently*: converting 2 `m**1e9` to `km**1e9` needs a factor of
+1e-3^1e9, which underflows to exactly 0.0, so the answer would be `0`.
+
+**No non-finite values, ever, and no silent zeros.** A NaN or infinite input
+magnitude is rejected with `INVALID_QUANTITY`; a computation that overflows
+returns `OVERFLOW` instead of emitting `inf`; and a non-zero quantity that
+would underflow to exactly zero through a multiplicative conversion returns
+`OVERFLOW` rather than a plausible-looking `0`. Offset scales are exempt from
+that last rule, because there −273.15 °C really is 0 K.
+
+## Errors
+
+Nodes never raise. Every output carries an `error` field, unset on success:
+
+`INVALID_UNIT` · `INVALID_QUANTITY` · `INCOMPATIBLE_UNITS` · `OFFSET_UNIT` ·
+`INVALID_ARGUMENT` · `OVERFLOW` · `INTERNAL`
+
+Note that two valid but incompatible units are **not** an error from
+`CheckCompatibility` — that is the answer, returned as `compatible: false`.
+
+## Tests
+
+```bash
+axiom test
+```
+
+125 tests, including an independent-oracle suite that checks conversions
+against values derived from scratch from the defining relations (1 inch =
+0.0254 m, 1 hp = 550 ft·lbf/s, F = C·9/5 + 32) rather than round-tripping
+through Pint, and a hostile-input suite covering injection strings, resource
+exhaustion and overflow across every node.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
+
+Wraps [Pint](https://github.com/hgrecco/pint) (BSD-3-Clause). The full
+dependency tree — Pint, flexcache, flexparser, platformdirs, typing_extensions
+— is permissive with no copyleft; see [requirements.txt](requirements.txt).
+
+Built for the Axiom marketplace.

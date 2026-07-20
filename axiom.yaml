@@ -1,0 +1,78 @@
+name: christiangeorgelucas/unit-tools
+version: 0.1.0
+language: python
+description: >-
+  Composable physical-unit nodes over a single Quantity envelope — parse a
+  written quantity, convert between units, reduce to SI base units, do
+  unit-carrying arithmetic, compare across units, format for display, and
+  inspect what a unit means or whether two units are interconvertible.
+  Handles offset temperature scales correctly and refuses the arithmetic that
+  is genuinely ambiguous on them. Fully offline and deterministic, wrapping
+  Pint.
+license: MIT
+author: Christian George Lucas
+tags:
+  - units
+  - unit-conversion
+  - measurement
+  - dimensional-analysis
+  - si
+  - metric
+  - imperial
+  - physics
+nodes:
+    - name: Parse
+      description: >-
+        Read a written quantity such as "5 km/h" or "9.81 m/s**2" into a
+        magnitude and a canonical unit, rejecting anything that is not exactly
+        one number followed by a unit rather than guessing at malformed text.
+      input: ParseRequest
+      output: Quantity
+    - name: Convert
+      description: >-
+        Express a quantity in a different unit of the same dimension — 1 mile
+        as kilometres, 100 degC as degF — reporting a dimensional mismatch as a
+        structured error instead of a wrong number.
+      input: ConvertRequest
+      output: Quantity
+    - name: ToBaseUnits
+      description: >-
+        Reduce a quantity to SI base units — 1 horsepower becomes
+        745.7 kg*m**2/s**3 — giving any two quantities of the same dimension a
+        common form to be compared or combined in.
+      input: Quantity
+      output: Quantity
+    - name: Format
+      description: >-
+        Render a quantity as human-readable text at a chosen precision and unit
+        style — spelled out, compact symbols, or pretty with unicode exponents.
+      input: FormatRequest
+      output: FormattedQuantity
+    - name: Arithmetic
+      description: >-
+        Add, subtract, multiply or divide two quantities with their units
+        carried through — 3 m / 1.5 s becomes 2 m/s — refusing dimensional
+        mismatches and the ambiguous arithmetic on temperature scales.
+      input: ArithmeticRequest
+      output: Quantity
+    - name: Compare
+      description: >-
+        Order two quantities that may be written in different units — is 1 mile
+        more than 1.5 km? — by reducing both to their shared SI base unit and
+        reporting the relation and the ratio between them.
+      input: CompareRequest
+      output: Comparison
+    - name: DescribeUnit
+      description: >-
+        Explain what a unit expression means — its canonical name, its physical
+        dimensions, the SI base units it reduces to and by what factor, and
+        whether it is an offset unit that cannot be scaled.
+      input: UnitInput
+      output: UnitDescription
+    - name: CheckCompatibility
+      description: >-
+        Test whether two units measure the same physical dimension and are
+        therefore interconvertible, reporting both dimensionalities and — for
+        multiplicative units — the factor between them.
+      input: CompatibilityRequest
+      output: Compatibility
