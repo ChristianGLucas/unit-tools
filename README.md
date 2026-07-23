@@ -1,6 +1,6 @@
 # unit-tools
 
-Composable physical-unit nodes for the [Axiom](https://axiom.dev) marketplace,
+Composable physical-unit nodes for the [Axiom](https://axiomide.com) marketplace,
 published as `christiangeorgelucas/unit-tools`.
 
 Unit arithmetic is a place where plausible-looking wrong answers are easy to
